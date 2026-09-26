@@ -1,7 +1,6 @@
 """Draws into a small low-resolution framebuffer (the "bitmap") and scales it
 up with nearest-neighbor to fill the real screen, producing the chunky,
-retro-pixel look. All color decisions go through palette.quantize, so bit
-depth/dithering apply uniformly regardless of what's being drawn.
+retro-pixel look. All color decisions go through palette.quantize.
 """
 from __future__ import annotations
 
@@ -43,8 +42,8 @@ class BitmapRenderer:
             x = 2
         surf.blit(rendered, (x, y))
 
-    def render_field(self, intensity: np.ndarray, colors, dither: bool, left_text: str = "", right_text: str = "") -> None:
-        rgb = palette_mod.quantize(intensity, colors, dither)
+    def render_field(self, intensity: np.ndarray, colors, left_text: str = "", right_text: str = "") -> None:
+        rgb = palette_mod.quantize(intensity, colors)
         surf = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
 
         if left_text or right_text:
@@ -54,22 +53,7 @@ class BitmapRenderer:
 
         self._present(surf)
 
-    def render_bars(self, band_values: np.ndarray, colors, dither: bool) -> None:
-        h, w = self.grid_height, self.grid_width
-        intensity = np.zeros((h, w), dtype=np.float32)
-        n_bands = len(band_values)
-        col_width = max(1, w // n_bands)
-        for i, level in enumerate(band_values):
-            bar_h = int(level * h)
-            if bar_h <= 0:
-                continue
-            x0 = i * col_width
-            x1 = min(w, x0 + col_width)
-            intensity[h - bar_h:h, x0:x1] = 1.0
-        rgb = palette_mod.quantize(intensity, colors, dither)
-        self._present(pygame.surfarray.make_surface(rgb.swapaxes(0, 1)))
-
-    def render_waveform(self, samples: np.ndarray, colors, dither: bool) -> None:
+    def render_waveform(self, samples: np.ndarray, colors) -> None:
         h, w = self.grid_height, self.grid_width
         intensity = np.zeros((h, w), dtype=np.float32)
         if len(samples) > 0:
@@ -77,5 +61,5 @@ class BitmapRenderer:
             ys = samples[xs]
             rows = np.clip(((1 - (ys * 0.5 + 0.5)) * (h - 1)).astype(np.int32), 0, h - 1)
             intensity[rows, np.arange(w)] = 1.0
-        rgb = palette_mod.quantize(intensity, colors, dither)
+        rgb = palette_mod.quantize(intensity, colors)
         self._present(pygame.surfarray.make_surface(rgb.swapaxes(0, 1)))

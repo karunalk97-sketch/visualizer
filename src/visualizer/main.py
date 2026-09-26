@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 
 import pygame
 
 from .analyzer import SpectrumAnalyzer
 from .audio_capture import SyntheticSource, WasapiLoopbackSource
 from .config import Config
-from .fields import build_field
 from .now_playing import NowPlayingWatcher
-from .palette import PALETTES, get_palette
+from .palette import grayscale_palette
 from .renderer import BitmapRenderer
+from .spectral_field import SpectralField, resize_nearest
 
 CHUNK_SIZE = 1024
-PALETTE_NAMES = list(PALETTES.keys()) + ["custom"]
-BIT_DEPTHS = [1, 2, 4, 8]
-MODES = ["field", "bars", "waveform"]
+BIT_DEPTHS = [1, 2, 3, 4]
+MODES = ["field", "waveform"]
 
 
 def build_source(demo: bool):
@@ -47,7 +45,7 @@ def setup_display(cfg: Config, windowed: bool) -> tuple[int, int, int, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Retro halftone audio visualizer")
+    parser = argparse.ArgumentParser(description="Frequency-mapped halftone audio visualizer")
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--demo", action="store_true", help="use a synthetic test tone instead of system audio")
     parser.add_argument("--windowed", action="store_true", help="override fullscreen for testing")
@@ -60,24 +58,25 @@ def main() -> None:
     grid_w, grid_h, screen_w, screen_h = setup_display(cfg, args.windowed)
     renderer = BitmapRenderer(grid_w, grid_h, screen_w, screen_h)
 
-    field_bands = min(grid_w, 256)
     analyzer = SpectrumAnalyzer(
         sample_rate=source.sample_rate,
-        num_bands=cfg.num_bands if cfg.mode != "field" else field_bands,
+        num_bands=cfg.num_freq_points,
         decay=cfg.decay,
         gain=cfg.gain,
     )
+    cluster_w = max(8, grid_w // cfg.cluster_scale)
+    cluster_h = max(8, grid_h // cfg.cluster_scale)
+    spectral_field = SpectralField(cfg.num_freq_points, cluster_w, cluster_h, persistence=cfg.persistence)
+
     clock = pygame.time.Clock()
 
     now_playing = NowPlayingWatcher()
     now_playing.start()
 
-    palette_idx = PALETTE_NAMES.index(cfg.palette) if cfg.palette in PALETTE_NAMES else 0
     depth_idx = BIT_DEPTHS.index(cfg.bit_depth) if cfg.bit_depth in BIT_DEPTHS else 0
     mode_idx = MODES.index(cfg.mode) if cfg.mode in MODES else 0
 
     frame_iter = source.frames(CHUNK_SIZE)
-    start_time = time.time()
     running = True
     while running:
         for event in pygame.event.get():
@@ -86,14 +85,9 @@ def main() -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                elif event.key == pygame.K_p:
-                    palette_idx = (palette_idx + 1) % len(PALETTE_NAMES)
-                    cfg.palette = PALETTE_NAMES[palette_idx]
                 elif event.key == pygame.K_b:
                     depth_idx = (depth_idx + 1) % len(BIT_DEPTHS)
                     cfg.bit_depth = BIT_DEPTHS[depth_idx]
-                elif event.key == pygame.K_d:
-                    cfg.dither = not cfg.dither
                 elif event.key == pygame.K_m:
                     mode_idx = (mode_idx + 1) % len(MODES)
                     cfg.mode = MODES[mode_idx]
@@ -104,29 +98,26 @@ def main() -> None:
                     print(f"saved settings to {args.config}")
 
         samples = next(frame_iter)
-        colors = get_palette(cfg.palette, cfg.bit_depth, cfg.custom_colors)
+        colors = grayscale_palette(cfg.bit_depth)
+        band_levels = analyzer.process(samples)
 
         if cfg.mode == "field":
-            band_levels = analyzer.process(samples)
-            t = time.time() - start_time
-            intensity = build_field(band_levels, grid_w, grid_h, t)
+            cluster = spectral_field.update(band_levels)
+            intensity = resize_nearest(cluster, grid_h, grid_w)
 
             left_text = right_text = ""
             if cfg.show_now_playing:
                 label = now_playing.current().label()
-                hint = f"P:{cfg.palette[:6].upper()} B:{cfg.bit_depth}BIT D:{'ON' if cfg.dither else 'OFF'}"
+                hint = f"{cfg.bit_depth}-BIT"
                 if cfg.text_corner == "bottom_right":
                     left_text, right_text = hint, label
                 else:
                     left_text, right_text = label, hint
 
-            renderer.render_field(intensity, colors, cfg.dither, left_text, right_text)
-        elif cfg.mode == "bars":
-            bands = analyzer.process(samples)
-            renderer.render_bars(bands, colors, cfg.dither)
+            renderer.render_field(intensity, colors, left_text, right_text)
         else:
             mono = samples.mean(axis=1) if samples.ndim > 1 else samples
-            renderer.render_waveform(mono, colors, cfg.dither)
+            renderer.render_waveform(mono, colors)
 
         clock.tick(cfg.fps)
 
