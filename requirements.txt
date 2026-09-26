@@ -4,3 +4,8 @@ pygame>=2.5
 # Windows-only: WASAPI loopback capture (system audio).
 # Install this on the machine that actually runs the visualizer against real audio.
 pyaudiowpatch>=0.2.12.6; sys_platform == "win32"
+
+# Windows-only: reads the current track from System Media Transport Controls
+# (the "now playing" overlay used by Spotify/browsers/media players) for the
+# bottom-of-screen text.
+winsdk>=1.0.0b10; sys_platform == "win32"
