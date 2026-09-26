@@ -27,7 +27,7 @@ class Config:
     fullscreen: bool = False         # opens as a normal window (with an X); F toggles fullscreen
     window_width: int = 1280
     window_height: int = 720
-    pixel_size: int = 6              # screen pixels per bitmap cell (bigger = chunkier)
+    pixel_size: int = 3              # screen pixels per bitmap cell: smaller = tighter/finer (Up/Down keys)
 
     mode: str = "field"              # "field" (default: per-frequency random spots) or "waveform"
     num_freq_points: int = 96        # how many frequency bins get their own spots on screen
@@ -38,6 +38,8 @@ class Config:
     persistence: float = 0.88        # per-frame decay of the cluster energy (trailing/glow)
     decay: float = 0.85              # per-frame falloff of each frequency band's smoothed level
     gain: float = 1.0                # overall sensitivity multiplier
+    waves: bool = True               # cascading waves driven by synths/harmonies (W toggles)
+    wave_strength: float = 0.6      # how strongly waves invert what is under them (0..1)
     reshuffle_on_new_song: bool = True
 
     show_now_playing: bool = True

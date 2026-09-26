@@ -1,4 +1,5 @@
-﻿"""Renders headless screenshots of the visualizer for different kinds of audio.
+"""Renders headless screenshots of the visualizer for different kinds of audio,
+running the same pipeline as the app (spots + waves + dithering + status bar).
 
     python tools/render_samples.py out_dir            # synthetic music styles
     python tools/render_samples.py out_dir --live 20  # + real system audio (Windows)
@@ -9,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -19,12 +19,13 @@ import pygame  # noqa: E402
 
 from visualizer.analyzer import SpectrumAnalyzer  # noqa: E402
 from visualizer.palette import grayscale_palette  # noqa: E402
-from visualizer.renderer import BitmapRenderer  # noqa: E402
-from visualizer.spectral_field import SpectralField, resize_nearest  # noqa: E402
+from visualizer.renderer import BitmapRenderer, bar_height  # noqa: E402
+from visualizer.spectral_field import SpectralField, resize_bilinear  # noqa: E402
+from visualizer.waves import WaveField, compose  # noqa: E402
 
 SR = 48000
 CHUNK = 1024
-W, H, PIXEL = 1280, 720, 6
+W, H, PIXEL = 1280, 720, 3
 
 
 def _t(seconds: float) -> np.ndarray:
@@ -69,6 +70,26 @@ def vocal(seconds: float) -> np.ndarray:
     return (0.35 * out / max(1e-6, np.abs(out).max()) * 2).astype(np.float32)
 
 
+def synth_pad(seconds: float) -> np.ndarray:
+    """Sustained detuned saw chords (Am7 -> Fmaj7 -> C -> G) with a gliding lead on top."""
+    t = _t(seconds)
+    chords = [(220.0, 261.6, 329.6, 392.0), (174.6, 220.0, 261.6, 329.6),
+              (196.0, 261.6, 329.6, 392.0), (196.0, 246.9, 293.7, 392.0)]
+    out = np.zeros_like(t)
+    seg = ((t / 3.0).astype(int)) % len(chords)
+    for i, chord in enumerate(chords):
+        mask = (seg == i).astype(np.float32)
+        mask = np.convolve(mask, np.ones(4800) / 4800, mode="same")  # soft chord changes
+        for f in chord:
+            for det in (0.997, 1.0, 1.004):
+                for h in range(1, 9):
+                    out += mask * np.sin(2 * np.pi * f * det * h * t) / h ** 1.2 * 0.05
+    lead_f = 660 + 260 * np.sin(2 * np.pi * 0.23 * t)
+    lead = 0.12 * np.sin(2 * np.pi * np.cumsum(lead_f) / SR) * (0.7 + 0.3 * np.sin(2 * np.pi * 5 * t))
+    lead += 0.05 * np.sin(2 * np.pi * np.cumsum(lead_f * 2) / SR)
+    return (out + lead).astype(np.float32)
+
+
 def full_mix(seconds: float, root: float = 220.0) -> np.ndarray:
     t = _t(seconds)
     chord = sum(np.sin(2 * np.pi * root * r * t) + 0.4 * np.sin(2 * np.pi * root * r * 2 * t)
@@ -78,29 +99,54 @@ def full_mix(seconds: float, root: float = 220.0) -> np.ndarray:
             + 0.6 * vocal(seconds)[: len(t)]).astype(np.float32)
 
 
+def pad_and_drums(seconds: float) -> np.ndarray:
+    return (synth_pad(seconds) + 0.9 * bass_heavy(seconds)).astype(np.float32)
+
+
+def drums_only(seconds: float) -> np.ndarray:
+    rng = np.random.default_rng(3)
+    t = _t(seconds)
+    hat = np.diff(rng.standard_normal(len(t) + 1)) * np.exp(-((t * 4.0) % 1.0) * 18) * 0.4
+    return (0.8 * bass_heavy(seconds) + hat).astype(np.float32)
+
+
 STYLES = {
     "bass_heavy": bass_heavy,
     "treble_bright": treble_bright,
     "vocal": vocal,
+    "synth_pad": synth_pad,
+    "pad_and_drums": pad_and_drums,
+    "drums_only": drums_only,
     "full_mix": full_mix,
 }
 
 
-def render_frames(chunks, seed: int, out_path: Path, warmup: int = 140, invert: float = 0.85) -> np.ndarray:
-    surf = pygame.display.set_mode((W, H))
-    gw, gh = W // PIXEL, H // PIXEL
+def render_frames(chunks, seed: int, out_path: Path, warmup: int = 240, invert: float = 0.85,
+                  waves: bool = True, bits: int = 1, pixel: int = PIXEL,
+                  label: str = "Midnight Drive - The Sample Band", crop: tuple | None = None) -> np.ndarray:
+    pygame.display.set_mode((W, H))
+    bar = bar_height(H)
+    gw, gh = W // pixel, (H - bar) // pixel
     renderer = BitmapRenderer(gw, gh, W, H)
     analyzer = SpectrumAnalyzer(sample_rate=SR, num_bands=96)
-    field = SpectralField(96, gw // 3, gh // 3, seed=seed, invert=invert)
-    colors = grayscale_palette(1)
-    levels = None
+    cw, ch = max(8, gw // 3), max(8, gh // 3)
+    field = SpectralField(96, cw, ch, seed=seed, invert=invert)
+    wave_field = WaveField(96, max(16, gw // 2), max(9, gh // 2), seed=seed)
+    levels = base = wave = None
     for n, chunk in enumerate(chunks):
         levels = analyzer.process(chunk)
-        cluster = field.update(levels)
+        base = field.update(levels)
+        wave = wave_field.update(levels)
         if n >= warmup:
             break
-    renderer.render_field(resize_nearest(cluster, gh, gw), colors, "", "")
-    pygame.image.save(pygame.display.get_surface(), str(out_path))
+    intensity = resize_bilinear(base, gh, gw)
+    if waves:
+        intensity = compose(intensity, resize_bilinear(wave, gh, gw))
+    renderer.render_field(intensity, grayscale_palette(bits), label, f"{bits}-bit  {chr(0xB7)}  {pixel}px")
+    surf = pygame.display.get_surface()
+    if crop:
+        surf = surf.subsurface(pygame.Rect(crop))
+    pygame.image.save(surf, str(out_path))
     return levels
 
 
@@ -130,21 +176,25 @@ def main() -> None:
     pygame.init()
 
     for name, fn in STYLES.items():
-        lv = render_frames(chunked(fn(4.0)), seed=11, out_path=out / f"{name}.png")
+        lv = render_frames(chunked(fn(6.0)), seed=11, out_path=out / f"{name}.png")
         print(f"{name}: mean level {lv.mean():.2f}, peak {lv.max():.2f}")
 
-    # same song, two different "songs" worth of layout
-    mix = full_mix(4.0)
-    render_frames(chunked(mix), seed=101, out_path=out / "full_mix_layout_A.png")
-    render_frames(chunked(mix), seed=202, out_path=out / "full_mix_layout_B.png")
+    # the same pad with waves switched off, for comparison
+    render_frames(chunked(synth_pad(6.0)), seed=11, out_path=out / "synth_pad_no_waves.png", waves=False)
+    # the same music at different pixel tightness and bit depth
+    for px in (2, 3, 6):
+        render_frames(chunked(pad_and_drums(6.0)), seed=11, out_path=out / f"grid_{px}px.png", pixel=px)
+    render_frames(chunked(pad_and_drums(6.0)), seed=11, out_path=out / "bits_2.png", bits=2)
+    render_frames(chunked(pad_and_drums(6.0)), seed=11, out_path=out / "bits_3.png", bits=3)
 
-    # same audio + layout, overlaps just adding (left) vs inverting (the default)
-    render_frames(chunked(mix), seed=11, out_path=out / "full_mix_additive.png", invert=0.0)
+    # silence after music: the waves must fade out to black
+    quiet = np.concatenate([synth_pad(3.0), np.zeros(SR * 4, dtype=np.float32)])
+    render_frames(chunked(quiet), seed=11, out_path=out / "after_silence.png", warmup=10 ** 6)
 
     if args.live:
         print(f"capturing {args.live}s of system audio ...")
         lv = render_frames(capture_live(args.live), seed=5, out_path=out / "live_system_audio.png",
-                           warmup=int(args.live * SR / CHUNK) - 2)
+                           warmup=int(args.live * SR / CHUNK) - 2, label="Live capture - Spotify")
         print(f"live: mean level {lv.mean():.2f}, peak {lv.max():.2f}")
 
 

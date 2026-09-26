@@ -21,8 +21,21 @@ class NowPlaying:
     artist: str = ""
 
     def label(self) -> str:
-        parts = [p for p in (self.title, self.artist, self.app) if p]
-        return " - ".join(parts) if parts else "NOW PLAYING: --"
+        """'Title - Artist', falling back to whatever is present; '' if nothing is playing."""
+        parts = [p for p in (self.title, self.artist) if p]
+        if parts:
+            return " - ".join(parts)
+        return self.app
+
+
+def clean_app_name(app_id: str) -> str:
+    """'Spotify.exe' -> 'Spotify', 'Microsoft.ZuneMusic_8wekyb3d8bbwe!App' -> 'ZuneMusic_8wekyb3d8bbwe'."""
+    name = app_id.split("!")[0]
+    if name.lower().endswith(".exe"):
+        name = name[:-4]
+    else:
+        name = name.split(".")[-1]
+    return name.capitalize() if name.islower() else name
 
 
 class NowPlayingWatcher:
@@ -67,11 +80,10 @@ class NowPlayingWatcher:
 
             info = await session.try_get_media_properties_async()
             app_id = session.source_app_user_model_id or ""
-            app = app_id.split("!")[0].split(".")[-1] or app_id
             return NowPlaying(
-                app=app.upper(),
-                title=(info.title or "").upper(),
-                artist=(info.artist or "").upper(),
+                app=clean_app_name(app_id) or app_id,
+                title=info.title or "",
+                artist=info.artist or "",
             )
 
         loop = asyncio.new_event_loop()

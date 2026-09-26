@@ -1,4 +1,4 @@
-﻿"""The core visual mechanism: every tracked frequency bin owns a few *random*
+"""The core visual mechanism: every tracked frequency bin owns a few *random*
 spots on the canvas. A spot only lights up when its frequency actually has
 energy, so which spots glow -- and how big they get -- is a direct trace of the
 music. Nothing is laid out in frequency order: neighbouring frequencies land in
@@ -189,6 +189,38 @@ class SpectralField:
 
         sub = layer[y0:y1, x0:x1]
         layer[y0:y1, x0:x1] = sub + amp - 2.0 * self.invert * sub * amp
+
+
+_resize_cache: dict[tuple[int, int, int, int], tuple] = {}
+
+
+def _resize_plan(in_h: int, in_w: int, out_h: int, out_w: int) -> tuple:
+    key = (in_h, in_w, out_h, out_w)
+    if key not in _resize_cache:
+        if len(_resize_cache) > 16:
+            _resize_cache.clear()
+        ys = np.clip((np.arange(out_h, dtype=np.float32) + 0.5) * in_h / out_h - 0.5, 0, in_h - 1)
+        xs = np.clip((np.arange(out_w, dtype=np.float32) + 0.5) * in_w / out_w - 0.5, 0, in_w - 1)
+        y0 = np.floor(ys).astype(np.intp)
+        x0 = np.floor(xs).astype(np.intp)
+        _resize_cache[key] = (
+            y0, np.minimum(y0 + 1, in_h - 1), x0, np.minimum(x0 + 1, in_w - 1),
+            (ys - y0).astype(np.float32)[:, None], (xs - x0).astype(np.float32)[None, :],
+        )
+    return _resize_cache[key]
+
+
+def resize_bilinear(arr: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
+    """Smooth upscale, so shapes stay smooth however fine the pixel grid is.
+    Separable (columns first, on the small array) with cached index tables."""
+    in_h, in_w = arr.shape
+    y0, y1, x0, x1, wy, wx = _resize_plan(in_h, in_w, out_h, out_w)
+    arr = arr.astype(np.float32, copy=False)
+    wide = arr[:, x0] * (1.0 - wx) + arr[:, x1] * wx          # (in_h, out_w) -- still small
+    out = wide[y0]
+    out *= 1.0 - wy
+    out += wide[y1] * wy
+    return out
 
 
 def resize_nearest(arr: np.ndarray, out_h: int, out_w: int) -> np.ndarray:

@@ -15,25 +15,41 @@ _BAYER_4X4 = np.array(
 ) / 16.0
 
 
+_tile_cache: dict[tuple[int, int], np.ndarray] = {}
+
+
+def _dither_tile(h: int, w: int) -> np.ndarray:
+    """The Bayer pattern cropped to (h, w); cached because the grid rarely changes."""
+    key = (h, w)
+    if key not in _tile_cache:
+        if len(_tile_cache) > 8:
+            _tile_cache.clear()
+        _tile_cache[key] = np.tile(_BAYER_4X4, (h // 4 + 1, w // 4 + 1))[:h, :w].astype(np.float32)
+    return _tile_cache[key]
+
+
 def grayscale_palette(bit_depth: int) -> list[RGB]:
     """bit_depth=1 -> pure black/white; bit_depth=N -> 2**N evenly spaced grays."""
     levels = 2 ** bit_depth
     return [(v, v, v) for v in (round(255 * i / (levels - 1)) for i in range(levels))]
 
 
+def quantize_indices(intensity: np.ndarray, n_colors: int) -> np.ndarray:
+    """Map a (H, W) float array in [0, 1] to (H, W) uint8 palette indices with
+    ordered dithering. This is the fast path: the renderer draws it as an 8-bit
+    palettised surface."""
+    h, w = intensity.shape
+    x = np.clip(intensity, 0.0, 1.0)
+    if n_colors > 1:
+        x = x + (_dither_tile(h, w) - 0.5) * (1.0 / (n_colors - 1))
+    x *= n_colors - 1
+    np.rint(x, out=x)
+    return np.clip(x, 0, n_colors - 1).astype(np.uint8)
+
+
 def quantize(intensity: np.ndarray, colors: list[RGB]) -> np.ndarray:
     """Map a (H, W) float array in [0, 1] to an (H, W, 3) uint8 image using
     only the given (grayscale) palette, with ordered dithering.
     """
-    n = len(colors)
-    intensity = np.clip(intensity, 0.0, 1.0)
-
-    if n > 1:
-        h, w = intensity.shape
-        tile = np.tile(_BAYER_4X4, (h // 4 + 1, w // 4 + 1))[:h, :w]
-        step = 1.0 / (n - 1)
-        intensity = intensity + (tile - 0.5) * step
-
-    indices = np.clip(np.round(np.clip(intensity, 0.0, 1.0) * (n - 1)), 0, n - 1).astype(np.int32)
-    palette_arr = np.array(colors, dtype=np.uint8)
-    return palette_arr[indices]
+    indices = quantize_indices(intensity, len(colors))
+    return np.array(colors, dtype=np.uint8)[indices]
