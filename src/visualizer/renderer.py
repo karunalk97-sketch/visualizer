@@ -15,6 +15,11 @@ BLACK = (0, 0, 0)
 
 class BitmapRenderer:
     def __init__(self, grid_width: int, grid_height: int, screen_width: int, screen_height: int) -> None:
+        pygame.font.init()
+        self.resize(grid_width, grid_height, screen_width, screen_height)
+
+    def resize(self, grid_width: int, grid_height: int, screen_width: int, screen_height: int) -> None:
+        """Call after the window is created or resized."""
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.screen_width = screen_width
@@ -23,7 +28,6 @@ class BitmapRenderer:
 
         font_px = max(10, grid_height // 12)
         self._bar_h = font_px + 4
-        pygame.font.init()
         self._font = pygame.font.Font(None, font_px)
 
     def _present(self, surf: pygame.Surface) -> None:

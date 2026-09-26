@@ -1,18 +1,34 @@
-"""The core visual mechanism: every tracked frequency bin owns a fixed spot
-on screen along a multi-turn spiral (not a grid, not mirrored), and that
-spot densifies only when that frequency actually has energy. Bins are laid
-out *in frequency order* along the spiral (with only small jitter) so that
-a single note -- which always spreads its energy across a contiguous run of
-neighboring bins via harmonics and FFT smearing -- lights up one connected
-regional cluster, not scattered specks all over the canvas. Which regions
-light up, and how large the clusters get, depends entirely on which
-frequencies are actually active, so a bass-heavy track, a bright treble
-track, and a full mix each carve out a different shape; nothing here is a
-decorative texture or a fixed bar/level meter.
+"""The core visual mechanism: every tracked frequency bin owns a few *random*
+spots on the canvas. A spot only lights up when its frequency actually has
+energy, so which spots glow -- and how big they get -- is a direct trace of the
+music. Nothing is laid out in frequency order: neighbouring frequencies land in
+unrelated places, so there is no left-to-right sweep, no spiral, no symmetry.
+
+To keep it alive rather than static:
+
+* every spot wanders slowly on its own smooth path (organic drift);
+* `reshuffle()` draws a brand new random layout -- the spots glide to their new
+  places instead of jumping -- and the app calls it on every new song.
+
+Positions are stored normalised (0..1) so the layout survives window resizes.
 """
 from __future__ import annotations
 
 import numpy as np
+
+
+def _scatter(rng: np.random.Generator, n: int, candidates: int = 8) -> np.ndarray:
+    """n random points in the unit square via best-candidate sampling: each new
+    point is the farthest of a few random candidates from the points so far.
+    Looks random (no lattice, no symmetry) but avoids big empty patches and
+    pile-ups, so the field fills the screen evenly."""
+    pts = np.empty((n, 2), dtype=np.float32)
+    pts[0] = rng.random(2)
+    for i in range(1, n):
+        cand = rng.random((candidates, 2)).astype(np.float32)
+        d = ((cand[:, None, :] - pts[None, :i, :]) ** 2).sum(axis=2).min(axis=1)
+        pts[i] = cand[int(np.argmax(d))]
+    return pts
 
 
 class SpectralField:
@@ -22,36 +38,83 @@ class SpectralField:
         cluster_w: int,
         cluster_h: int,
         persistence: float = 0.88,
-        revolutions: float = 3.2,
-        seed: int = 7,
+        spots_per_bin: int = 3,
+        drift: float = 0.03,
+        contrast: float = 0.5,
+        seed: int | None = None,
     ) -> None:
+        self.num_bins = num_bins
+        self.contrast = contrast
+        self.persistence = persistence
+        self.drift = drift
+        self._rng = np.random.default_rng(seed)
+        self._spots = num_bins * max(1, spots_per_bin)
+        self._spots_per_bin = max(1, spots_per_bin)
+        self._frame = 0
+
+        self._pos = _scatter(self._rng, self._spots)
+        self._target = self._pos.copy()
+        self._owner = self._new_owner()
+        self._weight = self._rng.uniform(0.75, 1.0, self._spots).astype(np.float32)
+        # each spot drifts on its own slow, smooth loop
+        self._drift_rate = self._rng.uniform(0.004, 0.016, (self._spots, 2)).astype(np.float32)
+        self._drift_phase = self._rng.uniform(0, 2 * np.pi, (self._spots, 2)).astype(np.float32)
+
+        self.resize(cluster_w, cluster_h)
+
+    # -- layout ---------------------------------------------------------------
+
+    def _new_owner(self) -> np.ndarray:
+        owner = np.repeat(np.arange(self.num_bins), self._spots_per_bin)
+        self._rng.shuffle(owner)
+        return owner
+
+    def reshuffle(self) -> None:
+        """Draw a brand new random layout; spots glide there over ~a second."""
+        self._target = _scatter(self._rng, self._spots)
+        self._owner = self._new_owner()
+        self._drift_phase = self._rng.uniform(0, 2 * np.pi, (self._spots, 2)).astype(np.float32)
+
+    def resize(self, cluster_w: int, cluster_h: int) -> None:
         self.cluster_w = cluster_w
         self.cluster_h = cluster_h
-        self.persistence = persistence
         self.buffer = np.zeros((cluster_h, cluster_w), dtype=np.float32)
 
-        rng = np.random.default_rng(seed)
-        frac = (np.arange(num_bins) + 0.5) / num_bins  # 0..1 in frequency order
-        r = np.sqrt(frac)  # sqrt spacing -> ~uniform area density per turn of the spiral
-        theta = frac * revolutions * 2.0 * np.pi
+    def positions(self) -> np.ndarray:
+        """Current spot positions in cluster-grid units, shape (spots, 2) as (x, y)."""
+        wobble = np.sin(self._frame * self._drift_rate + self._drift_phase) * self.drift
+        p = np.clip(self._pos + wobble, 0.0, 1.0)
+        return p * np.array([self.cluster_w - 1, self.cluster_h - 1], dtype=np.float32)
 
-        # small jitter for an organic, hand-drawn feel -- kept well below the
-        # spacing between neighboring bins so frequency locality is preserved
-        r = np.clip(r + rng.uniform(-0.02, 0.02, num_bins), 0.02, 1.0)
-        theta = theta + rng.uniform(-0.05, 0.05, num_bins)
-
-        self._bx = (0.5 + 0.48 * r * np.cos(theta)) * (cluster_w - 1)
-        self._by = (0.5 + 0.48 * r * np.sin(theta)) * (cluster_h - 1)
-        self._base_radius = 1.0 + 2.0 * r  # bins further out get a touch more natural spread
+    # -- per frame ------------------------------------------------------------
 
     def update(self, band_levels: np.ndarray) -> np.ndarray:
+        self._frame += 1
+        self._pos += (self._target - self._pos) * 0.04  # glide toward the current layout
         self.buffer *= self.persistence
-        for idx, level in enumerate(band_levels):
-            if level <= 0.02:
-                continue
-            self._splat(self._bx[idx], self._by[idx], self._base_radius[idx] + level * 4.0, level)
+
+        band_levels = self._shape(band_levels)
+        levels = band_levels[self._owner] * self._weight
+        xy = self.positions()
+        unit = max(1.0, min(self.cluster_w, self.cluster_h) / 22.0)
+        for i in np.nonzero(levels > 0.05)[0]:
+            level = float(levels[i])
+            self._splat(xy[i, 0], xy[i, 1], unit * (0.9 + 2.6 * level), level)
         np.clip(self.buffer, 0.0, 1.0, out=self.buffer)
         return self.buffer
+
+    def _shape(self, band_levels: np.ndarray) -> np.ndarray:
+        """Contrast: dense music has energy in almost every bin, which would
+        light the whole screen. Keep only what stands out against the current
+        peak, and scale by overall loudness so silence stays dark."""
+        peak = float(band_levels.max())
+        self._peak_ref = max(peak, getattr(self, "_peak_ref", 0.0) * 0.995)
+        ref = self._peak_ref
+        if ref < 0.03:
+            return band_levels * 0.0
+        gate = self.contrast * ref
+        shaped = np.clip((band_levels - gate) / max(ref - gate, 1e-6), 0.0, 1.0)
+        return shaped * min(1.0, ref / 0.2)
 
     def _splat(self, cx: float, cy: float, radius: float, level: float) -> None:
         x0, x1 = max(0, int(cx - radius)), min(self.cluster_w, int(cx + radius) + 1)

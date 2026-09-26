@@ -1,12 +1,24 @@
 [project]
 name = "visualizer"
-version = "0.1.0"
-description = "Retro bitmap-style system audio visualizer"
+version = "0.2.0"
+description = "Random-spot bitmap-style system audio visualizer"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "pygame>=2.5",
+    # Windows: system-audio loopback + "now playing" info
+    "pyaudiowpatch>=0.2.12; sys_platform == 'win32'",
+    "winrt-runtime; sys_platform == 'win32'",
+    "winrt-Windows.Foundation; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
+    "winrt-Windows.Media.Control; sys_platform == 'win32'",
+    # macOS / Linux: input-device capture
+    "sounddevice>=0.4; sys_platform != 'win32'",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyinstaller"]
 
 [project.scripts]
 visualizer = "visualizer.main:main"

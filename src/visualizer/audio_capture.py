@@ -83,10 +83,64 @@ class WasapiLoopbackSource:
         stream.start_stream()
         try:
             while stream.is_active():
-                yield q.get()
+                # WASAPI loopback delivers nothing while the PC is silent; yield
+                # silence instead of blocking so the window stays responsive.
+                try:
+                    yield q.get(timeout=0.05)
+                except queue.Empty:
+                    yield np.zeros((chunk_size, self._channels), dtype=np.float32)
         finally:
             stream.stop_stream()
             stream.close()
 
     def close(self) -> None:
         self._pa.terminate()
+
+
+class InputDeviceSource:
+    """macOS / Linux: reads an input device via sounddevice. macOS has no
+    built-in loopback, so a virtual device (BlackHole, Loopback, Soundflower)
+    is used if one is installed; otherwise the default input (the microphone)
+    is used, which still reacts to music playing on the speakers."""
+
+    PREFERRED = ("blackhole", "loopback", "soundflower", "monitor")
+
+    def __init__(self) -> None:
+        import sounddevice as sd
+
+        self._sd = sd
+        devices = sd.query_devices()
+        chosen = None
+        for idx, dev in enumerate(devices):
+            if dev["max_input_channels"] > 0 and any(k in dev["name"].lower() for k in self.PREFERRED):
+                chosen = idx
+                break
+        if chosen is None:
+            chosen = sd.default.device[0]
+        info = sd.query_devices(chosen)
+        self._device = chosen
+        self._channels = max(1, min(2, int(info["max_input_channels"])))
+        self.sample_rate = int(info["default_samplerate"])
+        self.device_name = info["name"]
+
+    def frames(self, chunk_size: int) -> Iterator[np.ndarray]:
+        q: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
+
+        def callback(indata, frame_count, time_info, status):
+            try:
+                q.put_nowait(indata.copy())
+            except queue.Full:
+                pass
+
+        with self._sd.InputStream(
+            device=self._device, channels=self._channels, samplerate=self.sample_rate,
+            blocksize=chunk_size, dtype="float32", callback=callback,
+        ):
+            while True:
+                try:
+                    yield q.get(timeout=0.05)
+                except queue.Empty:
+                    yield np.zeros((chunk_size, self._channels), dtype=np.float32)
+
+    def close(self) -> None:
+        pass

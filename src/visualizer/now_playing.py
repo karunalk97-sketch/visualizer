@@ -51,9 +51,14 @@ class NowPlayingWatcher:
         import asyncio
 
         async def poll_once() -> NowPlaying:
-            from winsdk.windows.media.control import (
-                GlobalSystemMediaTransportControlsSessionManager as SessionManager,
-            )
+            try:
+                from winsdk.windows.media.control import (
+                    GlobalSystemMediaTransportControlsSessionManager as SessionManager,
+                )
+            except ImportError:  # winsdk has no wheels past Python 3.12; winrt-* is its successor
+                from winrt.windows.media.control import (
+                    GlobalSystemMediaTransportControlsSessionManager as SessionManager,
+                )
 
             manager = await SessionManager.request_async()
             session = manager.get_current_session()
