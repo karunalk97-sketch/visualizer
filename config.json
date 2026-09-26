@@ -1,0 +1,14 @@
+{
+  "bit_depth": 2,
+  "palette": "gameboy",
+  "custom_colors": [],
+  "dither": true,
+  "grid_width": 64,
+  "grid_height": 32,
+  "window_scale": 12,
+  "mode": "bars",
+  "num_bands": 32,
+  "decay": 0.85,
+  "gain": 1.0,
+  "fps": 60
+}

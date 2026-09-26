@@ -1,0 +1,19 @@
+[project]
+name = "visualizer"
+version = "0.1.0"
+description = "Retro bitmap-style system audio visualizer"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pygame>=2.5",
+]
+
+[project.scripts]
+visualizer = "visualizer.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

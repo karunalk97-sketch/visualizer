@@ -1,0 +1,6 @@
+numpy>=1.24
+pygame>=2.5
+
+# Windows-only: WASAPI loopback capture (system audio).
+# Install this on the machine that actually runs the visualizer against real audio.
+pyaudiowpatch>=0.2.12.6; sys_platform == "win32"
