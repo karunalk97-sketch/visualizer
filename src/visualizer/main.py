@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> None:
         persistence=cfg.persistence,
         spots_per_bin=cfg.spots_per_bin,
         drift=cfg.drift,
+        invert=cfg.overlap_invert,
     )
 
     clock = pygame.time.Clock()

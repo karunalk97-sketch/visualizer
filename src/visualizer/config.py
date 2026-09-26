@@ -33,6 +33,7 @@ class Config:
     num_freq_points: int = 96        # how many frequency bins get their own spots on screen
     spots_per_bin: int = 3           # random spots each frequency owns
     drift: float = 0.03              # how far spots wander from home (fraction of the screen)
+    overlap_invert: float = 0.85     # where shapes overlap they invert (0 = just add, 1 = full negative)
     cluster_scale: int = 3           # cluster grid is this many dither-cells per side, coarser
     persistence: float = 0.88        # per-frame decay of the cluster energy (trailing/glow)
     decay: float = 0.85              # per-frame falloff of each frequency band's smoothed level

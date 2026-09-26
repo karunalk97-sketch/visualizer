@@ -1,4 +1,4 @@
-"""Renders headless screenshots of the visualizer for different kinds of audio.
+﻿"""Renders headless screenshots of the visualizer for different kinds of audio.
 
     python tools/render_samples.py out_dir            # synthetic music styles
     python tools/render_samples.py out_dir --live 20  # + real system audio (Windows)
@@ -86,12 +86,12 @@ STYLES = {
 }
 
 
-def render_frames(chunks, seed: int, out_path: Path, warmup: int = 140) -> np.ndarray:
+def render_frames(chunks, seed: int, out_path: Path, warmup: int = 140, invert: float = 0.85) -> np.ndarray:
     surf = pygame.display.set_mode((W, H))
     gw, gh = W // PIXEL, H // PIXEL
     renderer = BitmapRenderer(gw, gh, W, H)
     analyzer = SpectrumAnalyzer(sample_rate=SR, num_bands=96)
-    field = SpectralField(96, gw // 3, gh // 3, seed=seed)
+    field = SpectralField(96, gw // 3, gh // 3, seed=seed, invert=invert)
     colors = grayscale_palette(1)
     levels = None
     for n, chunk in enumerate(chunks):
@@ -137,6 +137,9 @@ def main() -> None:
     mix = full_mix(4.0)
     render_frames(chunked(mix), seed=101, out_path=out / "full_mix_layout_A.png")
     render_frames(chunked(mix), seed=202, out_path=out / "full_mix_layout_B.png")
+
+    # same audio + layout, overlaps just adding (left) vs inverting (the default)
+    render_frames(chunked(mix), seed=11, out_path=out / "full_mix_additive.png", invert=0.0)
 
     if args.live:
         print(f"capturing {args.live}s of system audio ...")

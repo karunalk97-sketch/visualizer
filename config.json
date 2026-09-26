@@ -8,6 +8,7 @@
   "num_freq_points": 96,
   "spots_per_bin": 3,
   "drift": 0.03,
+  "overlap_invert": 0.85,
   "cluster_scale": 3,
   "persistence": 0.88,
   "decay": 0.85,

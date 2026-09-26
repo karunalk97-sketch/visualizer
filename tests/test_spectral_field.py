@@ -89,3 +89,35 @@ def test_resize_nearest_shape_and_content():
     big = resize_nearest(small, out_h=4, out_w=4)
     assert big.shape == (4, 4)
     assert set(np.unique(big)) <= {0.0, 1.0}
+
+def test_shapes_vary_between_spots():
+    field = SpectralField(num_bins=96, cluster_w=100, cluster_h=60, seed=9)
+    assert len(set(field._kind.tolist())) == 4              # blobs, spikes, strings, hybrids all present
+    assert field._elong.max() > 2.5 and field._elong.min() < 1.4   # round and stringy
+    assert field._spikes.max() >= 5 and field._spikes.min() == 0   # spiky and smooth
+    assert len(set(np.round(field._angle, 2).tolist())) > 50       # pointing every which way
+
+
+def test_reshuffle_draws_new_shapes():
+    field = SpectralField(num_bins=32, cluster_w=80, cluster_h=50, seed=1)
+    before = field._angle.copy()
+    field.reshuffle()
+    assert not np.allclose(before, field._angle)
+
+
+def test_overlaps_invert_instead_of_just_adding():
+    loud = np.full(48, 1.0, dtype=np.float32)
+    additive = SpectralField(num_bins=48, cluster_w=60, cluster_h=36, persistence=0.0, invert=0.0, seed=6)
+    negative = SpectralField(num_bins=48, cluster_w=60, cluster_h=36, persistence=0.0, invert=1.0, seed=6)
+    a, n = additive.update(loud).copy(), negative.update(loud).copy()
+    assert n.sum() < a.sum()          # crossings cancel out
+    assert ((n < a - 0.3).sum()) > 20  # and there are real inverted pixels, not rounding noise
+    assert n.min() >= 0.0 and n.max() <= 1.0
+
+
+def test_held_note_does_not_strobe():
+    field = SpectralField(num_bins=16, cluster_w=60, cluster_h=36, persistence=0.88, seed=2)
+    held = np.zeros(16, dtype=np.float32)
+    held[5] = 0.9
+    sums = [field.update(held).sum() for _ in range(30)]
+    assert max(sums[10:]) < 1.25 * min(sums[10:])   # steady, not flashing frame to frame
