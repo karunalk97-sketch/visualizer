@@ -4,7 +4,7 @@ A black & white, 1-bit audio visualizer for whatever is playing on your computer
 Pure code, no images: layers the music builds, calm when the music is calm and
 punchy when it hits. The design (and why) is in [docs/DESIGN.md](docs/DESIGN.md).
 
-**Website, examples and downloads: https://visualizer-1bit.vercel.app** (the page
+**Website, examples and downloads: https://1bit-visualizer.vercel.app** (the page
 itself lives in [site/](site/)).
 
 - **Every version we built, selectable -- and fusable.** The *Versions* tab lists
