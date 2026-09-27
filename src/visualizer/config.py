@@ -28,15 +28,10 @@ class Config:
     decay: float = 0.85              # per-frame falloff of each frequency band's smoothed level
     gain: float = 1.0                # overall sensitivity multiplier
 
-    show_shapes: bool = True         # the spiky/blobby shapes (1 toggles)
-    waves: bool = True               # one smooth foam line sweeping across, shaped by the music (2 toggles)
-    wave_strength: float = 0.6       # how strongly the foam line inverts what is under it (0..1)
-    wave_softness: float = 0.6       # 0 = crisper edges, 1 = very feathered
-    wave_rate: float = 1.0           # how often waves appear (2 = twice as often)
     depth: float = 0.35              # relief lighting that makes the picture read as 3D (0 = flat)
     reshuffle_on_new_song: bool = True
 
-    render_mode: str = "pixels"      # "pixels" (dithered) or "chars" (glyphs; 3 toggles)
+    render_mode: str = "pixels"      # "pixels" (dithered) or "chars" (glyphs; C toggles)
     glyph_cell: int = 12             # character mode: cell size in screen pixels
     glyph_mapping: str = "random"    # "random" glyph per cell, or "brightness" (denser glyph = brighter)
     glyph_sets: list = field(default_factory=lambda: ["shapes"])   # any of: shapes, symbols, ascii, binary

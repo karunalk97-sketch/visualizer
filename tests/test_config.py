@@ -19,6 +19,7 @@ def test_every_launch_starts_from_the_same_defaults():
 def test_defaults_are_sensible():
     cfg = Config()
     assert cfg.render_mode == "pixels" and cfg.pixel_size == 3 and cfg.bit_depth == 1
-    assert cfg.show_shapes and cfg.waves and cfg.depth > 0
+    assert cfg.depth > 0 and cfg.overlap_invert > 0
+    assert not hasattr(cfg, "waves") and not hasattr(cfg, "show_shapes")           # the wave layer and shape toggle were removed
     assert set(cfg.glyph_sets) <= {k for k, _ in GLYPH_SETS}
     assert not hasattr(cfg, "glyph_font") and not hasattr(cfg, "glyph_chars")     # custom fonts/text were removed

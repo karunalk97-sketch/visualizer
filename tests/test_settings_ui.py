@@ -64,9 +64,9 @@ def test_tab_key_opens_and_closes_and_escape_closes():
     assert not key(panel, pygame.K_ESCAPE)            # closed: not consumed, main can use it
 
 
-def test_three_tabs_and_clicking_them_switches():
+def test_two_tabs_and_clicking_them_switches():
     cfg, panel, _ = opened()
-    assert [k for k, _ in TABS] == ["look", "layers", "chars"]
+    assert [k for k, _ in TABS] == ["look", "chars"]
     for k, _ in TABS:
         click(panel, panel._header["tab:" + k].center)
         assert panel.tab == k
@@ -75,8 +75,8 @@ def test_three_tabs_and_clicking_them_switches():
 def test_arrow_keys_switch_tabs_and_wrap():
     cfg, panel, _ = opened()
     key(panel, pygame.K_RIGHT)
-    assert panel.tab == "layers"
-    key(panel, pygame.K_RIGHT); key(panel, pygame.K_RIGHT)
+    assert panel.tab == "chars"
+    key(panel, pygame.K_RIGHT)
     assert panel.tab == "look"                         # wrapped around
     key(panel, pygame.K_LEFT)
     assert panel.tab == "chars"
@@ -84,20 +84,21 @@ def test_arrow_keys_switch_tabs_and_wrap():
 
 def test_each_tab_shows_its_own_controls():
     cfg, panel, _ = opened("look")
-    assert {"Draw with", "Bit depth", "3D depth", "Sensitivity", "Fullscreen"} <= set(labels(panel))
-    panel.set_tab("layers")
-    assert {"Shapes", "Foam wave", "Wave strength", "Wave softness", "How often waves come"} <= set(labels(panel))
+    assert {"Draw with", "Bit depth", "3D depth", "Overlap inversion", "Sensitivity", "Fullscreen"} <= set(labels(panel))
     panel.set_tab("chars")
     assert {"Character sets", "Pick glyphs", "Character size"} <= set(labels(panel))
 
 
-def test_the_old_font_and_text_controls_are_gone():
+def test_no_wave_or_font_or_text_controls_remain():
     cfg, panel, _ = opened()
     every = []
     for k, _ in TABS:
         panel.set_tab(k)
         every += labels(panel)
-    assert not any("font" in l.lower() or "characters (paste" in l.lower() or "type" in l.lower() for l in every)
+    joined = " ".join(every).lower()
+    assert "wave" not in joined and "foam" not in joined
+    assert "font" not in joined and "type" not in joined and "paste" not in joined
+    assert not any(hasattr(cfg, a) for a in ("waves", "wave_strength", "wave_softness", "wave_rate", "show_shapes"))
 
 
 def test_close_button_and_clicks_outside():
@@ -117,18 +118,12 @@ def test_closed_panel_consumes_nothing():
 # -- controls -----------------------------------------------------------------------
 
 def test_toggle_flips_the_setting_and_reports_it():
-    cfg, panel, calls = opened("layers")
-    assert cfg.waves
-    click(panel, row(panel, "Foam wave").rect.center)
-    assert cfg.waves is False and "waves" in calls["changed"]
-    click(panel, row(panel, "Foam wave").rect.center)
-    assert cfg.waves is True
-
-
-def test_shapes_and_waves_switch_independently():
-    cfg, panel, _ = opened("layers")
-    click(panel, row(panel, "Shapes").rect.center)
-    assert cfg.show_shapes is False and cfg.waves is True
+    cfg, panel, calls = opened("look")
+    assert cfg.show_now_playing
+    click(panel, row(panel, "Track and status bar text").rect.center)
+    assert cfg.show_now_playing is False and "show_now_playing" in calls["changed"]
+    click(panel, row(panel, "Track and status bar text").rect.center)
+    assert cfg.show_now_playing is True
 
 
 def test_a_toggle_responds_anywhere_on_its_row():
@@ -156,25 +151,25 @@ def test_bit_depth_stepper_stays_in_range():
 
 
 def test_slider_click_and_drag_follow_the_mouse():
-    cfg, panel, _ = opened("layers")
-    track = row(panel, "Wave softness").parts[0][0]
+    cfg, panel, _ = opened("look")
+    track = row(panel, "3D depth").parts[0][0]
     click(panel, (track.x, track.centery))
-    assert cfg.wave_softness == 0.0 and panel._drag is not None
+    assert cfg.depth == 0.0 and panel._drag is not None
     move(panel, (track.x + track.width // 2, track.centery + 40))     # vertical wobble doesn't drop the drag
-    assert 0.45 < cfg.wave_softness < 0.55
+    assert 0.45 < cfg.depth < 0.55
     move(panel, (track.right + 300, track.centery))                    # dragging past the end clamps
-    assert cfg.wave_softness == 1.0
+    assert cfg.depth == 1.0
     release(panel, (track.right, track.centery))
     assert panel._drag is None
     move(panel, (track.x, track.centery))
-    assert cfg.wave_softness == 1.0                                    # released: no longer follows
+    assert cfg.depth == 1.0                                            # released: no longer follows
 
 
 def test_slider_can_be_grabbed_anywhere_on_its_row():
-    cfg, panel, _ = opened("layers")
-    r = row(panel, "Wave strength")
+    cfg, panel, _ = opened("look")
+    r = row(panel, "Overlap inversion")
     click(panel, (r.rect.centerx, r.rect.y + 3))        # near the label, well above the track
-    assert 0.4 < cfg.wave_strength < 0.7
+    assert 0.4 < cfg.overlap_invert < 0.6
 
 
 def test_draw_with_choice_and_the_size_stepper_follows_the_mode():
@@ -268,11 +263,10 @@ def test_everything_fits_on_screen_without_scrolling_and_targets_stay_big(height
 
 
 def test_slider_and_pill_targets_are_generous_at_the_default_size():
-    cfg, panel, _ = opened("layers")
-    r = row(panel, "Wave strength")
+    cfg, panel, _ = opened("look")
+    r = row(panel, "3D depth")
     assert r.rect.height >= 40                                             # the whole row is grabbable
-    cfg2, panel2, _ = opened("look")
-    for rect, _ in row(panel2, "Pixel size").parts:
+    for rect, _ in row(panel, "Pixel size").parts:
         assert rect.width >= 32 and rect.height >= 32
 
 

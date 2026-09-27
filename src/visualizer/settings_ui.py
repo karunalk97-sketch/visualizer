@@ -1,7 +1,7 @@
 """In-window settings panel (Tab, or click the status bar). Drawn over the picture
 in the app's own black-and-white style, so it looks the same on every platform.
 
-Three tabs (Look / Layers / Characters) keep everything on one screen -- no
+Two tabs (Look / Characters) keep everything on one screen -- no
 scrolling -- with large click targets, hover feedback and a Randomize button that
 is always visible. Everything changes live and lasts for the session only. The
 panel knows nothing about the visualizer: it reads and writes a Config and calls
@@ -25,7 +25,7 @@ LINE = (62, 62, 62)
 HOVER = (28, 28, 28)
 ACCENT = (245, 245, 245)
 FONT_CANDIDATES = "segoeui,helveticaneue,helvetica,arial,dejavusans,sans"
-TABS = [("look", "Look"), ("layers", "Layers"), ("chars", "Characters")]
+TABS = [("look", "Look"), ("chars", "Characters")]
 
 
 @dataclass
@@ -103,17 +103,12 @@ class SettingsPanel:
             Ctl("stepper", "Bit depth", "look", lambda: c.bit_depth, s("bit_depth"), options=[1, 2, 3, 4], fmt="{}-bit"),
             Ctl("slider", "3D depth", "look", lambda: c.depth, s("depth"), lo=0.0, hi=1.0),
             Ctl("slider", "Sensitivity", "look", lambda: c.gain, s("gain"), lo=0.4, hi=3.0, fmt="{:.1f}x"),
+            Ctl("slider", "Overlap inversion", "look", lambda: c.overlap_invert, s("overlap_invert"), lo=0.0, hi=1.0),
             Ctl("toggle", "Fullscreen", "look", lambda: c.fullscreen, s("fullscreen")),
             Ctl("toggle", "New layout on every song", "look", lambda: c.reshuffle_on_new_song, s("reshuffle_on_new_song")),
             Ctl("toggle", "Track and status bar text", "look", lambda: c.show_now_playing, s("show_now_playing")),
             Ctl("button", "Reshuffle the layout now", "look", action=self.on_reshuffle),
 
-            Ctl("toggle", "Shapes", "layers", lambda: c.show_shapes, s("show_shapes")),
-            Ctl("slider", "Overlap inversion", "layers", lambda: c.overlap_invert, s("overlap_invert"), lo=0.0, hi=1.0),
-            Ctl("toggle", "Foam wave", "layers", lambda: c.waves, s("waves")),
-            Ctl("slider", "Wave strength", "layers", lambda: c.wave_strength, s("wave_strength"), lo=0.1, hi=1.0),
-            Ctl("slider", "Wave softness", "layers", lambda: c.wave_softness, s("wave_softness"), lo=0.0, hi=1.0),
-            Ctl("slider", "How often waves come", "layers", lambda: c.wave_rate, s("wave_rate"), lo=0.25, hi=3.0, fmt="{:.1f}x"),
 
             Ctl("note", "Switch “Draw with” to Characters on the Look tab to use these.", "chars", visible=pixels_on),
             Ctl("chips", "Character sets", "chars", lambda: c.glyph_sets, toggle_set, options=GLYPH_SETS),

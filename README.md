@@ -12,19 +12,8 @@ looks three-dimensional.
   draws many small quick ones. The shapes are a smooth **orb**, a **spiky orb**, a
   long-spiked **star**, an ambiguous lumpy **blob**, and a small share of long thin
   **slashes**; all of them spin. **Every new song draws a brand new random layout.**
-- **A foam line.** When a synth, pad, chord or held vocal note *starts*, one smooth
-  line of foam enters from an edge of the screen (a different edge each time),
-  spans the whole edge, and sweeps across to the far side and off it. Just the
-  thick foam crest: no wash of water behind it, no wet sand, no rolling back out.
-  The line is shaped by the music while it travels: the sustained tonal energy in
-  the mid and high range (what synths, pads and harmonies are doing, not the
-  drums) is smoothed into a flowing curve, so the line pushes forward and
-  thickens where that energy is strong and thins and trails where it is weak.
-  Louder notes cross faster, low sounds make a thicker line, bright sounds a
-  thinner one. There are stretches with no line, and in silence it fades away.
-- **Everything inverts where it overlaps.** Where shapes cross, and where the foam
-  line covers anything, the pixels invert like a negative: white goes black, gray
-  flips, black shows white.
+- **Everything inverts where it overlaps.** Where shapes cross, the pixels invert
+  like a negative: white goes black, gray flips, black shows white.
 - **3D depth.** The picture is lit like an embossed relief (highlights on edges
   facing the light, shadows on the far side), so a flat dither reads as a surface
   with depth. A slider sets how strong.
@@ -61,12 +50,10 @@ Or by hand: `pip install -e .` then `python -m visualizer.main`
 It opens as a normal window (minimize / maximize / **X**). It stays open when you
 click into other apps or other monitors and only closes when you close it.
 
-**Press `Tab` (or click the status bar) for settings.** Three tabs, no scrolling:
+**Press `Tab` (or click the status bar) for settings.** Two tabs, no scrolling:
 
 - *Look*: pixels or characters, pixel / character size, bit depth, 3D depth,
-  sensitivity, fullscreen, new layout on every song, status text
-- *Layers*: shapes on/off, overlap inversion, foam wave on/off, wave strength,
-  softness, and how often the wave comes
+  overlap inversion, sensitivity, fullscreen, new layout on every song, status text
 - *Characters*: which sets to use (Shapes / Symbols / ASCII / Binary), random or
   by-brightness, character size
 
@@ -76,7 +63,7 @@ The **Randomize** button is always at the bottom of the panel.
 |-----|--------|
 | `Tab` | Open / close the settings panel (`Esc` closes it; `Left` / `Right` switch tabs) |
 | `Space` | Randomize the whole look |
-| `1` / `2` / `3` | Toggle shapes / toggle the foam wave / switch pixels <-> characters |
+| `C` | Switch between pixels and characters |
 | `Up` / `Down` | Tighter / looser cells (pixels: 2-12 px; characters: 6-40 px) |
 | `B` | Cycle bit depth (1 / 2 / 3 / 4 -> 2 / 4 / 8 / 16 gray levels) |
 | `F` / `F11` | Toggle fullscreen (`Esc` leaves fullscreen; it never closes the app) |
@@ -93,7 +80,6 @@ rate up.
 audio_capture.py    WASAPI loopback (Windows), input device (macOS/Linux), or a synthetic test tone
 analyzer.py         FFT -> 96 log-spaced frequency energies with attack/decay smoothing
 spectral_field.py   Per-band-normalised shapes: grouped big bass shapes, many small treble ones, area budget
-waves.py            The foam line: born on note onsets, shaped by the smoothed sustained spectrum
 relief.py           Relief lighting that makes the picture read as 3D
 glyphs.py           Character mode: glyph atlas (Shapes / Symbols / ASCII / Binary), random or by-brightness
 randomizer.py       The Randomize button
@@ -110,12 +96,6 @@ Each frequency band is compared with *its own* recent peak, ranked (weighted by
 real energy, so a kick's broadband click can't outrank the bass), capped to a
 fraction of the bands, and limited by a per-frame area budget -- that is what keeps
 a hard bass hit from lighting the whole screen while still letting a hi-hat show.
-
-The foam line is driven by each band's *sustained* energy (the lower of its current
-level and its recent average), which is why held notes bring a wave and drum hits
-don't. That same sustained spectrum, resampled and blurred hard into a gentle
-profile, sets where along the line it pushes forward and thickens; blurring it that
-much is what keeps the line a smooth curve instead of a jagged trace.
 
 A new song is detected from the OS now-playing info (Windows) or, where that isn't
 available, from music resuming after a silent gap.

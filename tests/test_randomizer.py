@@ -18,25 +18,21 @@ def test_every_result_is_a_valid_watchable_combination():
         assert cfg.glyph_sets and set(cfg.glyph_sets) <= set(KEYS)
         assert cfg.glyph_sets == [k for k in KEYS if k in cfg.glyph_sets]        # stable order, no duplicates
         assert cfg.glyph_mapping in ("random", "brightness")
-        assert cfg.show_shapes                                                    # shapes stay on: waves come and go, so never waves-only
-        assert 0.3 <= cfg.wave_strength <= 0.9 and 0.2 <= cfg.wave_softness <= 1.0
-        assert 0.5 <= cfg.wave_rate <= 2.1 and 0.3 <= cfg.overlap_invert <= 1.0 and 0.1 <= cfg.depth <= 0.8
+        assert 0.3 <= cfg.overlap_invert <= 1.0 and 0.1 <= cfg.depth <= 0.8
 
 
 def test_it_actually_varies_what_you_get():
     cfg = Config()
     rng = np.random.default_rng(1)
-    seen = {"modes": set(), "sets": set(), "layers": set(), "bits": set(), "mapping": set()}
+    seen = {"modes": set(), "sets": set(), "bits": set(), "mapping": set()}
     for _ in range(300):
         randomize(cfg, rng)
         seen["modes"].add(cfg.render_mode)
         seen["sets"].add(tuple(cfg.glyph_sets))
-        seen["layers"].add((cfg.show_shapes, cfg.waves))
         seen["bits"].add(cfg.bit_depth)
         seen["mapping"].add(cfg.glyph_mapping)
     assert seen["modes"] == {"pixels", "chars"}
     assert len(seen["sets"]) >= 8
-    assert seen["layers"] == {(True, True), (True, False)}                    # with or without waves, never a blank screen
     assert seen["bits"] == {1, 2, 3} and seen["mapping"] == {"random", "brightness"}
 
 

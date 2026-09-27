@@ -1,6 +1,7 @@
 import numpy as np
 
 from visualizer.relief import relief
+from visualizer.spectral_field import resize_bilinear
 
 
 def bump(h=60, w=100):
@@ -47,3 +48,11 @@ def test_the_effect_is_steady_across_resolutions():
         return np.abs(relief(b, 0.7) - b).max()
     small, big = strength(60, 100), strength(240, 400)
     assert 0.4 < small / big < 2.5
+
+
+def test_bilinear_is_smooth_and_range_preserving():
+    small = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+    big = resize_bilinear(small, 8, 8)
+    assert big.shape == (8, 8)
+    assert big.min() >= 0.0 and big.max() <= 1.0
+    assert len(np.unique(np.round(big, 3))) > 4

@@ -1,5 +1,5 @@
 """Renders headless screenshots of the visualizer for different kinds of audio,
-running the same pipeline as the app (shapes + sea-foam surf + relief + pixels
+running the same pipeline as the app (shapes + relief + pixels
 or characters + status bar + optional settings panel).
 
     python tools/render_samples.py out_dir            # synthetic music styles
@@ -22,14 +22,13 @@ import pygame  # noqa: E402
 from visualizer.analyzer import SpectrumAnalyzer  # noqa: E402
 from visualizer.config import Config  # noqa: E402
 from visualizer.glyphs import GlyphField  # noqa: E402
-from visualizer.main import grid_for, shape_grid, wave_grid  # noqa: E402
+from visualizer.main import grid_for, shape_grid  # noqa: E402
 from visualizer.palette import grayscale_palette  # noqa: E402
 from visualizer.randomizer import randomize  # noqa: E402
 from visualizer.relief import relief  # noqa: E402
 from visualizer.renderer import BitmapRenderer  # noqa: E402
 from visualizer.settings_ui import SettingsPanel  # noqa: E402
 from visualizer.spectral_field import SpectralField, resize_bilinear  # noqa: E402
-from visualizer.waves import WaveField, compose  # noqa: E402
 
 SR = 48000
 CHUNK = 1024
@@ -146,19 +145,16 @@ STYLES = {
 
 def render_frames(chunks, seed: int, out_path: Path, warmup: int = 240, cfg: Config | None = None,
                   label: str = "Midnight Drive - The Sample Band", crop: tuple | None = None,
-                  panel: bool = False, tab: str = "look", want_wave: bool = False, pick_peak: bool = False,
+                  panel: bool = False, tab: str = "look", pick_peak: bool = False,
                   **cfg_overrides) -> np.ndarray:
     """Runs the audio through the app's pipeline and saves one frame. With
-    `want_wave` it waits (up to ~15 s more) for a sea-foam wave that is well
-    into its run; with `pick_peak` it keeps the brightest frame after warmup."""
+    `pick_peak` it keeps the brightest frame after warmup (the hardest hit)."""
     cfg = dataclasses.replace(cfg or Config(), **cfg_overrides)
     pygame.display.set_mode((W, H))
     grid_w, grid_h = grid_for(cfg, W, H)
     renderer = BitmapRenderer(grid_w, grid_h, W, H)
     analyzer = SpectrumAnalyzer(sample_rate=SR, num_bands=96)
     field = SpectralField(96, *shape_grid(W, H), seed=seed, invert=cfg.overlap_invert)
-    waves = WaveField(96, *wave_grid(W, H), seed=seed, strength=cfg.wave_strength,
-                      softness=cfg.wave_softness, rate=cfg.wave_rate)
     glyphs = GlyphField(seed=seed)
     ui = SettingsPanel(cfg, lambda name: None, lambda: None, lambda: None)
     ui.visible, ui.tab = panel, tab
@@ -170,24 +166,14 @@ def render_frames(chunks, seed: int, out_path: Path, warmup: int = 240, cfg: Con
     for chunk in chunks:
         levels = analyzer.process(chunk)
         base = field.update(levels)
-        surf = waves.update(levels) if cfg.waves else None
         n += 1
         if n < warmup:
             continue
-        intensity = (resize_bilinear(base, grid_h, grid_w) if cfg.show_shapes else np.zeros((grid_h, grid_w), np.float32))
-        if surf is not None and waves.active:
-            intensity = compose(intensity, resize_bilinear(surf, grid_h, grid_w))
-        intensity = relief(intensity, cfg.depth)
+        intensity = relief(resize_bilinear(base, grid_h, grid_w), cfg.depth)
         if pick_peak:
             score = float(base.mean())
             if score > best[0]:
                 best = (score, intensity.copy())
-            continue
-        if want_wave:
-            ready = any(0.3 < w.age / w.life < 0.6 for w in waves._waves)
-            if ready or n > warmup + 900:
-                best = (0.0, intensity)
-                break
             continue
         best = (0.0, intensity)
         break
@@ -203,7 +189,6 @@ def render_frames(chunks, seed: int, out_path: Path, warmup: int = 240, cfg: Con
         surface = surface.subsurface(pygame.Rect(crop))
     pygame.image.save(surface, str(out_path))
     return levels
-
 
 def chunked(signal: np.ndarray):
     for i in range(0, len(signal) - CHUNK, CHUNK):
@@ -231,46 +216,38 @@ def main() -> None:
     pygame.init()
 
     for name, fn in STYLES.items():
-        lv = render_frames(chunked(fn(14.0)), seed=11, out_path=out / f"{name}.png", want_wave=name in ("synth_pad", "vocal"))
+        lv = render_frames(chunked(fn(14.0)), seed=11, out_path=out / f"{name}.png")
         print(f"{name}: mean level {lv.mean():.2f}, peak {lv.max():.2f}")
 
-    pad = lambda: chunked(synth_pad(16.0))                    # noqa: E731
     mix = lambda: chunked(pad_and_drums(14.0))                # noqa: E731
     # the worst moment of a hard kick vs a hi-hat: neither may fill the screen
     render_frames(chunked(hard_kick(8.0)), 11, out / "hit_kick.png", pick_peak=True, warmup=60)
     render_frames(chunked(hi_hat(8.0)), 11, out / "hit_hat.png", pick_peak=True, warmup=60)
-    # 3D depth relief off vs on, and layers on / off (same frame each time)
-    render_frames(pad(), 11, out / "depth_off.png", want_wave=True, depth=0.0)
-    render_frames(pad(), 11, out / "depth_on.png", want_wave=True, depth=0.6)
-    render_frames(pad(), 11, out / "layers_waves_only.png", want_wave=True, show_shapes=False)
-    render_frames(pad(), 11, out / "layers_shapes_only.png", waves=False)
+    # 3D depth relief off vs on (same frame)
+    render_frames(mix(), 11, out / "depth_off.png", depth=0.0)
+    render_frames(mix(), 11, out / "depth_on.png", depth=0.6)
     # character sets
-    base = dict(render_mode="chars", want_wave=True, glyph_cell=12)
+    base = dict(render_mode="chars", glyph_cell=12)
     render_frames(mix(), 11, out / "chars_shapes.png", glyph_sets=["shapes"], **base)
     render_frames(mix(), 11, out / "chars_symbols.png", glyph_sets=["symbols"], **base)
     render_frames(mix(), 11, out / "chars_ascii.png", glyph_sets=["ascii"], glyph_mapping="brightness", **{**base, "glyph_cell": 10})
     render_frames(mix(), 11, out / "chars_binary.png", glyph_sets=["binary"], **{**base, "glyph_cell": 10})
     render_frames(mix(), 11, out / "chars_mixed.png", glyph_sets=["shapes", "symbols", "ascii"], **base)
-    # the settings panel, all three tabs
+    # the settings panel, both tabs
     render_frames(mix(), 11, out / "panel_look.png", panel=True, tab="look")
-    render_frames(mix(), 11, out / "panel_layers.png", panel=True, tab="layers")
     render_frames(mix(), 11, out / "panel_chars.png", panel=True, tab="chars", render_mode="chars", glyph_sets=["shapes", "symbols"])
     # what the Randomize button gives you
     rng = np.random.default_rng(21)
     for i in range(6):
         cfg = Config()
         randomize(cfg, rng)
-        render_frames(mix(), 11 + i, out / f"random_{i}.png", cfg=cfg, want_wave=True)
-
-    quiet = np.concatenate([synth_pad(3.0), np.zeros(SR * 12, dtype=np.float32)])
-    render_frames(chunked(quiet), seed=11, out_path=out / "after_silence.png", warmup=10 ** 6)
+        render_frames(mix(), 11 + i, out / f"random_{i}.png", cfg=cfg)
 
     if args.live:
         print(f"capturing {args.live}s of system audio ...")
         lv = render_frames(capture_live(args.live), seed=5, out_path=out / "live_system_audio.png",
                            warmup=int(args.live * SR / CHUNK) - 2, label="Live capture - Spotify")
         print(f"live: mean level {lv.mean():.2f}, peak {lv.max():.2f}")
-
 
 if __name__ == "__main__":
     main()

@@ -9,7 +9,6 @@ import sys
 # Without this SDL minimizes a fullscreen window the moment it loses focus.
 os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
 
-import numpy as np  # noqa: E402
 import pygame  # noqa: E402
 
 from .analyzer import SpectrumAnalyzer  # noqa: E402
@@ -23,7 +22,6 @@ from .relief import relief  # noqa: E402
 from .renderer import BitmapRenderer, bar_height  # noqa: E402
 from .settings_ui import SettingsPanel  # noqa: E402
 from .spectral_field import SpectralField, resize_bilinear  # noqa: E402
-from .waves import WaveField, compose  # noqa: E402
 from .window_style import blacken_title_bar  # noqa: E402
 
 CHUNK_SIZE = 1024
@@ -85,11 +83,6 @@ def shape_grid(screen_w: int, screen_h: int) -> tuple[int, int]:
     return max(16, screen_w // 9), max(9, (screen_h - bar_height(screen_h)) // 9)
 
 
-def wave_grid(screen_w: int, screen_h: int) -> tuple[int, int]:
-    """The surf is soft, so it is computed on a modest grid and smoothly upscaled."""
-    return max(24, screen_w // 8), max(14, (screen_h - bar_height(screen_h)) // 8)
-
-
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Random-spot frequency audio visualizer")
     parser.add_argument("--demo", action="store_true", help="use a synthetic test tone instead of system audio")
@@ -121,8 +114,6 @@ def main(argv: list[str] | None = None) -> None:
         drift=cfg.drift,
         invert=cfg.overlap_invert,
     )
-    wave_field = WaveField(cfg.num_freq_points, *wave_grid(screen_w, screen_h),
-                           strength=cfg.wave_strength, softness=cfg.wave_softness, rate=cfg.wave_rate)
     glyph_field = GlyphField()
 
     clock = pygame.time.Clock()
@@ -141,7 +132,6 @@ def main(argv: list[str] | None = None) -> None:
         grid_w, grid_h = grid_for(cfg, screen_w, screen_h)
         renderer.resize(grid_w, grid_h, screen_w, screen_h)
         spectral_field.resize(*shape_grid(screen_w, screen_h))
-        wave_field.resize(*wave_grid(screen_w, screen_h))
 
     def layout_signature() -> tuple:
         return (cfg.render_mode, cfg.pixel_size, cfg.glyph_cell, screen_w, screen_h)
@@ -156,7 +146,6 @@ def main(argv: list[str] | None = None) -> None:
 
     def reshuffle() -> None:
         spectral_field.reshuffle()
-        wave_field.reshuffle()
         glyph_field.reshuffle()
 
     def do_randomize() -> None:
@@ -217,11 +206,7 @@ def main(argv: list[str] | None = None) -> None:
                 elif event.key == pygame.K_b:
                     depth_idx = (depth_idx + 1) % len(BIT_DEPTHS)
                     cfg.bit_depth = BIT_DEPTHS[depth_idx]
-                elif event.key == pygame.K_1:
-                    cfg.show_shapes = not cfg.show_shapes
-                elif event.key in (pygame.K_2, pygame.K_w):
-                    cfg.waves = not cfg.waves
-                elif event.key == pygame.K_3:
+                elif event.key == pygame.K_c:
                     cfg.render_mode = "pixels" if cfg.render_mode == "chars" else "chars"
                 elif event.key == pygame.K_m:
                     mode_idx = (mode_idx + 1) % len(MODES)
@@ -236,7 +221,6 @@ def main(argv: list[str] | None = None) -> None:
         # live settings
         analyzer.gain = cfg.gain
         spectral_field.invert = cfg.overlap_invert
-        wave_field.strength, wave_field.softness, wave_field.rate = cfg.wave_strength, cfg.wave_softness, cfg.wave_rate
 
         samples = next(frame_iter)
         colors = grayscale_palette(cfg.bit_depth)
@@ -270,12 +254,7 @@ def main(argv: list[str] | None = None) -> None:
                 left_text, right_text = label, hint
 
         if cfg.mode == "field":
-            base = spectral_field.update(band_levels)
-            intensity = resize_bilinear(base, grid_h, grid_w) if cfg.show_shapes else np.zeros((grid_h, grid_w), np.float32)
-            if cfg.waves:
-                surf = wave_field.update(band_levels)
-                if wave_field.active:
-                    intensity = compose(intensity, resize_bilinear(surf, grid_h, grid_w))
+            intensity = resize_bilinear(spectral_field.update(band_levels), grid_h, grid_w)
             intensity = relief(intensity, cfg.depth)
             if cfg.render_mode == "chars":
                 glyph_field.configure(cfg.glyph_sets, max(6, cfg.glyph_cell), cfg.bit_depth)
