@@ -1,6 +1,7 @@
 """Chooses where the audio comes from, and lets you change it while the app runs.
 
-* "All system audio"  -- whatever the PC is playing (or the input device on macOS/Linux).
+* "All system audio"  -- whatever the computer is playing (on macOS 14.2+ through a
+                         Core Audio tap; on older macOS / Linux the input device).
 * One application     -- only that app's audio (Spotify, a browser, a player...).
 
 The choice is remembered by executable name, not process id, so it survives the app
@@ -17,7 +18,8 @@ from typing import Callable
 import numpy as np
 
 from .audio_apps import AppLister, AudioApp, per_app_supported
-from .audio_capture import AppLoopbackSource, InputDeviceSource, SyntheticSource, WasapiLoopbackSource
+from .audio_capture import (AppLoopbackSource, InputDeviceSource, SyntheticSource, SystemTapSource,
+                            WasapiLoopbackSource)
 from .features import FFT_SIZE
 
 SYSTEM = "system"
@@ -27,6 +29,11 @@ APP_PREFIX = "app:"
 def _default_system_factory():
     if sys.platform == "win32":
         return WasapiLoopbackSource()
+    if sys.platform == "darwin":
+        try:
+            return SystemTapSource()          # macOS 14.2+: no extra software needed
+        except Exception:
+            pass                              # older macOS: the microphone (or BlackHole, if installed)
     return InputDeviceSource()
 
 
@@ -172,7 +179,14 @@ class AudioRouter:
     def label(self) -> str:
         if self.selected != SYSTEM:
             return f"Waiting for {self._wanted_label}" if self.waiting else self._source_label()
-        return "Demo tone" if self._is_demo else "System audio"
+        if self._is_demo:
+            return "Demo tone"
+        return "System audio blocked: Tab > Audio" if self.hint else "System audio"
+
+    @property
+    def hint(self) -> str:
+        """What the capture itself reports is wrong (macOS: permission not given)."""
+        return getattr(self._source, "hint", "") or ""
 
     def _source_label(self) -> str:
         return next((a.label for a in self._lister.apps if a.key == self._wanted), self._wanted_label)

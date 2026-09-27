@@ -55,7 +55,7 @@ itself lives in [site/](site/)).
 | OS | File | Notes |
 |----|------|-------|
 | Windows | `AudioVisualizer-windows.exe` | Double-click. Captures system audio directly (no cables). SmartScreen may warn because the app is unsigned: *More info -> Run anyway*. |
-| macOS (Apple silicon) | `AudioVisualizer-mac.zip` | Unzip, then right-click the app -> *Open* the first time. macOS has no built-in loopback, so it listens to the default input (microphone), or to a virtual device like BlackHole if installed. |
+| macOS (Apple silicon) | `AudioVisualizer-mac.zip` | Unzip, then right-click the app -> *Open* the first time, and *Allow* recording system audio. On macOS 14.2+ it hears everything the Mac plays through a Core Audio tap, nothing else to install ([packaging/mac/SystemAudioTap.swift](packaging/mac/SystemAudioTap.swift)). Older macOS falls back to the microphone. |
 
 **From source, one double-click** (installs Python packages for you on first run):
 

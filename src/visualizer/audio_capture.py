@@ -6,8 +6,10 @@
 * AppLoopbackSource      -- ONE application's audio only (Windows 10 2004+ / 11),
                             via WASAPI process loopback, so the picture follows
                             Spotify or a browser instead of "whatever the PC is playing".
-* InputDeviceSource      -- macOS / Linux input device (microphone or a virtual
-                            loopback device such as BlackHole).
+* SystemTapSource        -- macOS 14.2+: everything the Mac is playing, through a
+                            Core Audio process tap (no virtual audio driver needed).
+* InputDeviceSource      -- older macOS / Linux: an input device (the microphone, or
+                            a virtual loopback device such as BlackHole).
 * SyntheticSource        -- a sweeping test tone, for demos and tests.
 
 Every source exposes `sample_rate` and `frames(chunk_size)`, a generator that yields
@@ -17,8 +19,13 @@ its own (silence is yielded while nothing is playing).
 """
 from __future__ import annotations
 
+import os
+import struct
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Iterator, Protocol
 
 import numpy as np
@@ -276,11 +283,119 @@ class AppLoopbackSource:
         self._closed.set()
 
 
+TAP_HELPER = "SystemAudioTap"
+NO_PERMISSION_NOTE = ("Only silence is coming through while apps are playing: macOS is blocking it. "
+                      "Allow Audio Visualizer in System Settings > Privacy & Security > "
+                      "Screen & System Audio Recording, then reopen it.")
+
+
+def find_tap_helper() -> Path:
+    """The bundled macOS system-audio helper (built from packaging/mac/SystemAudioTap.swift)."""
+    candidates = []
+    if os.environ.get("VISUALIZER_TAP_HELPER"):
+        candidates.append(Path(os.environ["VISUALIZER_TAP_HELPER"]))
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:                                                # inside the .app
+        candidates += [Path(bundle) / TAP_HELPER, Path(bundle).parent / "Resources" / TAP_HELPER,
+                       Path(sys.executable).parent / TAP_HELPER]
+    candidates.append(Path(__file__).resolve().parents[2] / "build" / "mac" / TAP_HELPER)   # from source
+    for path in candidates:
+        if path.is_file() and os.access(path, os.X_OK):
+            return path
+    raise FileNotFoundError("the system audio helper isn't built")
+
+
+class SystemTapSource:
+    """macOS 14.2+: everything the Mac is playing, with nothing extra to install.
+
+    The capture runs in a small bundled helper (a Core Audio process tap); it streams
+    a 12-byte header ("VTAP", version, sample rate) and then mono float32 samples on
+    stdout, and quits when its stdin closes. macOS asks once for permission to record
+    system audio; if it is denied only silence arrives, and `hint` explains what to do.
+
+    Raises if the helper is missing or can't start (older macOS), so the caller can
+    fall back to the input device. `command` is injectable for tests.
+    """
+
+    MAGIC = b"VTAP"
+    START_SECONDS = 1.5          # wait this long for it to fail; a permission prompt can take longer
+
+    def __init__(self, command: list[str] | None = None) -> None:
+        cmd = command or [str(find_tap_helper())]
+        self.sample_rate = 48000
+        self.hint = ""
+        self._window = LatestWindow(self.sample_rate)
+        self._started = threading.Event()
+        self._ended = threading.Event()
+        self._closed = threading.Event()
+        self._errors: list[str] = []
+        self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        self._notes = threading.Thread(target=self._read_notes, daemon=True)
+        self._notes.start()
+        threading.Thread(target=self._read_audio, daemon=True).start()
+        deadline = time.monotonic() + self.START_SECONDS
+        while not (self._started.is_set() or self._ended.is_set()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if self._ended.is_set() and not self._started.is_set():
+            self._notes.join(1.0)
+            self.close()
+            raise RuntimeError(self._errors[-1] if self._errors else "the system audio helper stopped")
+
+    def _read_notes(self) -> None:
+        for raw in self._proc.stderr:
+            line = raw.decode("utf-8", "replace").strip()
+            if line == "hint: no-permission":
+                self.hint = NO_PERMISSION_NOTE
+            elif line.startswith("error: "):
+                self._errors.append(line[len("error: "):])
+
+    def _read_audio(self) -> None:
+        out = self._proc.stdout
+        try:
+            header = b""
+            while len(header) < 12:
+                more = out.read(12 - len(header))
+                if not more:
+                    return
+                header += more
+            if header[:4] != self.MAGIC:
+                self._errors.append("the system audio helper sent something unexpected")
+                return
+            _, rate = struct.unpack("<II", header[4:])
+            self.sample_rate = self._window.sample_rate = int(rate)
+            self._started.set()
+            rest = b""
+            while True:
+                data = out.read(16384)
+                if not data:
+                    return
+                data = rest + data
+                usable = len(data) // 4 * 4
+                self._window.push(np.frombuffer(data[:usable], dtype=np.float32))
+                rest = data[usable:]
+        finally:
+            self._ended.set()
+
+    def frames(self, chunk_size: int) -> Iterator[np.ndarray]:
+        # ends when the helper does (e.g. the output device changed); the router re-opens
+        while not self._closed.is_set() and not self._ended.is_set():
+            yield self._window.latest(chunk_size)          # always the newest audio, never a backlog
+            time.sleep(0.002)
+
+    def close(self) -> None:
+        self._closed.set()
+        try:
+            self._proc.stdin.close()                         # the helper's cue to quit
+            self._proc.wait(1.0)
+        except Exception:
+            self._proc.kill()
+
+
 class InputDeviceSource:
-    """macOS / Linux: reads an input device via sounddevice. macOS has no
-    built-in loopback, so a virtual device (BlackHole, Loopback, Soundflower)
-    is used if one is installed; otherwise the default input (the microphone)
-    is used, which still reacts to music playing on the speakers."""
+    """Older macOS / Linux: reads an input device via sounddevice. A virtual
+    loopback device (BlackHole, Loopback, Soundflower) is used if one is installed;
+    otherwise the default input (the microphone), which still reacts to music
+    playing on the speakers."""
 
     PREFERRED = ("blackhole", "loopback", "soundflower", "monitor")
 

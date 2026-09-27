@@ -196,9 +196,11 @@ class SettingsPanel:
         if a is None:
             return [Ctl("note", "Choosing the audio source isn't available here.", "audio")]
         out = [Ctl("sources", "Listen to", "audio", lambda: a.selected, a.select, options=a.options()[:MAX_SOURCES])]
-        if not a.supported:
+        if getattr(a, "hint", ""):
+            out.append(Ctl("note", a.hint, "audio"))
+        elif not a.supported:
             out.append(Ctl("note", "Picking a single app needs Windows 10 (version 2004) or newer. Here the picture follows "
-                                   "all system audio, or the input device on macOS and Linux.", "audio"))
+                                   "everything the computer plays (before macOS 14.2, and on Linux, the input device).", "audio"))
         elif a.notice:
             out.append(Ctl("note", a.notice, "audio"))
         else:

@@ -1,6 +1,6 @@
 [project]
 name = "visualizer"
-version = "0.2.0"
+version = "0.3.0"
 description = "Random-spot bitmap-style system audio visualizer"
 requires-python = ">=3.10"
 dependencies = [

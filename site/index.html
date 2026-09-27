@@ -119,7 +119,7 @@
       <a class="btn" id="dl-win" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-windows.exe">
         Download for Windows <small>.exe · Windows 10/11</small></a>
       <a class="btn" id="dl-mac" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-mac.zip">
-        Download for Mac <small>.zip · Apple silicon</small></a>
+        Download for Mac <small>.zip · macOS 14.2+</small></a>
       <p class="note">Free and open source. No account, nothing to sign up for. <a href="#install">How to run it ↓</a></p>
     </div>
   </div>
@@ -174,25 +174,20 @@
 
       <div class="card">
         <h3>Mac</h3>
-        <p class="sub">macOS on Apple silicon (M1 and newer) · for Intel Macs, run it from source below</p>
+        <p class="sub">macOS 14.2 Sonoma or newer · Apple silicon (M1 and newer) · for Intel Macs, run it from source below</p>
         <ol>
           <li>Download <code>AudioVisualizer-mac.zip</code> and double-click it to unzip. Drag <b>AudioVisualizer</b> into <em>Applications</em>.</li>
           <li>The first time, <b>right-click the app → Open → Open</b>. The app isn't notarized, so macOS asks once.
             On macOS 15 or newer, if there's no <em>Open</em> button: open it once, then go to <b>System Settings → Privacy &amp; Security</b>
             and click <b>Open Anyway</b>.</li>
-          <li>Click <b>Allow</b> when it asks for the microphone. That's how it hears the music.</li>
-          <li>Press <kbd>Tab</kbd> for settings, <kbd>F</kbd> for fullscreen.</li>
+          <li>When macOS asks to let it record system audio, click <b>Allow</b>. That's how it hears what your Mac is playing.
+            Nothing is recorded or saved, and there's nothing else to install.</li>
+          <li>Play some music. Press <kbd>Tab</kbd> for settings, <kbd>F</kbd> for fullscreen.</li>
         </ol>
         <details>
-          <summary>Make it react to music playing on the Mac itself (not the room)</summary>
-          <p>macOS doesn't let apps listen to system audio directly, so by default the visualizer hears your microphone.
-            To feed it the Mac's own sound:</p>
-          <ol>
-            <li>Install the free <a href="https://existential.audio/blackhole/">BlackHole 2ch</a> audio driver.</li>
-            <li>Open <b>Audio MIDI Setup</b>, click <b>+</b> → <b>Create Multi-Output Device</b>, and tick your speakers and <b>BlackHole 2ch</b>.</li>
-            <li>In <b>System Settings → Sound</b>, set <em>Output</em> to the Multi-Output Device and <em>Input</em> to <b>BlackHole 2ch</b>.</li>
-            <li>Restart the visualizer. You'll hear the music as normal, and it sees it too.</li>
-          </ol>
+          <summary>It stays black, or I clicked Don't Allow</summary>
+          <p>Open <b>System Settings → Privacy &amp; Security → Screen &amp; System Audio Recording</b>, turn on <b>AudioVisualizer</b>,
+            then quit and reopen it. On macOS older than 14.2 it can't hear the Mac directly and listens through the microphone instead.</p>
         </details>
         <a class="btn" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-mac.zip">Download for Mac <small>.zip</small></a>
       </div>

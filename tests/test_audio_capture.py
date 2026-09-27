@@ -1,9 +1,11 @@
 import struct
+import sys
 import time
 
 import numpy as np
+import pytest
 
-from visualizer.audio_capture import AppLoopbackSource, LatestWindow, RollingWindow, SyntheticSource
+from visualizer.audio_capture import AppLoopbackSource, LatestWindow, RollingWindow, SyntheticSource, SystemTapSource
 
 
 class FakeNative:
@@ -124,6 +126,54 @@ def test_latest_window_pads_silence_when_capture_goes_quiet():
     clock.t = 0.6
     w.push(np.full(5, 0.5, dtype=np.float32))                       # sound again
     assert list(w.latest(5)) == [0.5] * 5
+
+
+FAKE_TAP = """
+import struct, sys, threading, time
+out = sys.stdout.buffer
+out.write(b"VTAP" + struct.pack("<II", 1, 44100))
+sys.stderr.write("hint: no-permission\\n"); sys.stderr.flush()
+def stream():
+    block = struct.pack("<3f", 0.25, 0.5, 0.75)
+    while True:
+        out.write(block[:5]); out.flush()                        # samples torn across writes
+        out.write(block[5:]); out.flush()
+        time.sleep(0.005)
+threading.Thread(target=stream, daemon=True).start()
+sys.stdin.read()                                                # runs until the app closes stdin
+"""
+
+
+def test_mac_system_tap_streams_the_helpers_audio(tmp_path):
+    helper = tmp_path / "tap.py"
+    helper.write_text(FAKE_TAP)
+    src = SystemTapSource([sys.executable, str(helper)])
+    gen = src.frames(3)
+    deadline = time.monotonic() + 5
+    chunk = next(gen)
+    while not np.allclose(chunk, [0.25, 0.5, 0.75]) and time.monotonic() < deadline:
+        chunk = next(gen)
+    assert src.sample_rate == 44100 and np.allclose(chunk, [0.25, 0.5, 0.75])
+    while not src.hint and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert "Privacy & Security" in src.hint                       # denied permission is explained
+    src.close()
+    assert src._proc.poll() is not None and list(gen) == []      # the helper quit and the stream ended
+
+
+def test_mac_system_tap_raises_when_the_helper_cant_start(tmp_path):
+    helper = tmp_path / "tap.py"
+    helper.write_text("import sys; sys.stderr.write('error: needs macOS 14.2\\n'); sys.exit(4)")
+    with pytest.raises(RuntimeError, match="needs macOS 14.2"):
+        SystemTapSource([sys.executable, str(helper)])
+
+
+def test_mac_falls_back_to_the_input_device_without_the_tap(monkeypatch):
+    from visualizer import audio_router
+    monkeypatch.setattr(audio_router.sys, "platform", "darwin")
+    monkeypatch.setattr(audio_router, "SystemTapSource", lambda: (_ for _ in ()).throw(RuntimeError("old macOS")))
+    monkeypatch.setattr(audio_router, "InputDeviceSource", lambda: "microphone")
+    assert audio_router._default_system_factory() == "microphone"
 
 
 def test_the_test_tone_source_produces_audio():

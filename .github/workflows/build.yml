@@ -48,14 +48,50 @@ jobs:
             --exclude-module scipy --exclude-module matplotlib --paths src packaging/entry.py
           mv dist/AudioVisualizer.exe "${{ matrix.artifact }}"
 
+      - name: Build the system audio helper (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # hears everything the Mac plays through a Core Audio tap (macOS 14.2+), no driver needed
+          mkdir -p build/mac
+          swiftc -O -target arm64-apple-macos14.2 packaging/mac/SystemAudioTap.swift -o build/mac/SystemAudioTap
+          build/mac/SystemAudioTap --check
+
+      - name: Try the helper on this machine (informational)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: python
+        run: |
+          import subprocess, threading, time
+          p = subprocess.Popen(["build/mac/SystemAudioTap"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          got = {"out": b"", "err": b""}
+          def drain(name, pipe):
+              for chunk in iter(lambda: pipe.read(65536), b""):
+                  got[name] += chunk
+          threads = [threading.Thread(target=drain, args=(n, s), daemon=True) for n, s in (("out", p.stdout), ("err", p.stderr))]
+          [t.start() for t in threads]
+          time.sleep(3)
+          p.stdin.close()                       # the helper's cue to quit
+          try:
+              p.wait(10)
+          except subprocess.TimeoutExpired:
+              p.kill(); p.wait()
+          [t.join(2) for t in threads]
+          print("exit code", p.returncode, "| bytes", len(got["out"]), "| header", got["out"][:12])
+          print(got["err"].decode(errors="replace")[-800:])
+
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --name AudioVisualizer \
-            --collect-all sounddevice --collect-all _sounddevice_data --paths src packaging/entry.py
-          # macOS asks for microphone permission (needed to hear music through the input device)
+            --collect-all sounddevice --collect-all _sounddevice_data \
+            --add-binary build/mac/SystemAudioTap:. --paths src packaging/entry.py
+          # macOS asks once to record system audio (the tap), or for the microphone on older macOS
+          plutil -insert NSAudioCaptureUsageDescription -string "Listens to what your Mac is playing to draw the visualizer." \
+            dist/AudioVisualizer.app/Contents/Info.plist
           plutil -insert NSMicrophoneUsageDescription -string "Listens to the music to draw the visualizer." \
             dist/AudioVisualizer.app/Contents/Info.plist
+          find dist/AudioVisualizer.app -name SystemAudioTap -perm -u+x | grep . \
+            || { echo "SystemAudioTap missing from the app"; exit 1; }
           codesign --force --deep --sign - dist/AudioVisualizer.app
           ditto -c -k --keepParent dist/AudioVisualizer.app "${{ matrix.artifact }}"
 
