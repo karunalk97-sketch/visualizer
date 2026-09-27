@@ -39,11 +39,14 @@ def quantize_indices(intensity: np.ndarray, n_colors: int) -> np.ndarray:
     ordered dithering. This is the fast path: the renderer draws it as an 8-bit
     palettised surface."""
     h, w = intensity.shape
-    x = np.clip(intensity, 0.0, 1.0)
+    x = np.clip(intensity, 0.0, 1.0) * (n_colors - 1)
     if n_colors > 1:
-        x = x + (_dither_tile(h, w) - 0.5) * (1.0 / (n_colors - 1))
-    x *= n_colors - 1
-    np.rint(x, out=x)
+        # threshold each cell against its (centred) Bayer value: pure white stays pure
+        # white and pure black stays black -- no stray dots in solid areas
+        x = x + _dither_tile(h, w) + (0.5 / 16.0)
+    else:
+        x = x + 0.5
+    np.floor(x, out=x)
     return np.clip(x, 0, n_colors - 1).astype(np.uint8)
 
 

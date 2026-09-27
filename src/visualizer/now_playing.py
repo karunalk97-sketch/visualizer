@@ -38,9 +38,22 @@ def clean_app_name(app_id: str) -> str:
     return name.capitalize() if name.islower() else name
 
 
+def pick_session_index(app_ids: list[str], preferred: str | None) -> int | None:
+    """Index of the media session that belongs to the app we are listening to
+    (matched on the executable name inside the session's app id), else None."""
+    if not preferred:
+        return None
+    want = preferred.lower()
+    for i, app_id in enumerate(app_ids):
+        if want in (app_id or "").lower():
+            return i
+    return None
+
+
 class NowPlayingWatcher:
     def __init__(self, poll_interval: float = 1.5) -> None:
         self.poll_interval = poll_interval
+        self._preferred: str | None = None
         self._current = NowPlaying()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -60,6 +73,15 @@ class NowPlayingWatcher:
         with self._lock:
             return self._current
 
+    def prefer(self, app_key: str | None) -> None:
+        """Follow this app's media session (e.g. 'spotify') instead of whichever
+        session Windows calls current, so the title matches what we are listening to.
+        None goes back to the system's current session."""
+        with self._lock:
+            if app_key != self._preferred:
+                self._preferred = app_key
+                self._current = NowPlaying()      # don't show the previous app's track meanwhile
+
     def _run(self) -> None:
         import asyncio
 
@@ -74,7 +96,16 @@ class NowPlayingWatcher:
                 )
 
             manager = await SessionManager.request_async()
-            session = manager.get_current_session()
+            with self._lock:
+                preferred = self._preferred
+            sessions = list(manager.get_sessions())
+            idx = pick_session_index([s.source_app_user_model_id or "" for s in sessions], preferred)
+            if idx is not None:
+                session = sessions[idx]
+            elif preferred:
+                return NowPlaying()               # the app we listen to has no media session: show no (wrong) title
+            else:
+                session = manager.get_current_session()
             if session is None:
                 return NowPlaying()
 

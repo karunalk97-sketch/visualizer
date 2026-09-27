@@ -40,8 +40,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          # scipy is excluded on purpose: proc-tap only needs it for resampling we don't use
           python -m PyInstaller --noconfirm --clean --onefile --windowed --name AudioVisualizer \
-            --collect-submodules winrt --collect-all pyaudiowpatch --paths src packaging/entry.py
+            --collect-submodules winrt --collect-all pyaudiowpatch \
+            --hidden-import proctap._native --collect-submodules proctap.backends \
+            --collect-submodules pycaw --collect-submodules comtypes \
+            --exclude-module scipy --exclude-module matplotlib --paths src packaging/entry.py
           mv dist/AudioVisualizer.exe "${{ matrix.artifact }}"
 
       - name: Build (macOS)

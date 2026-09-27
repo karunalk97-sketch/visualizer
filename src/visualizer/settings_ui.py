@@ -1,7 +1,7 @@
 """In-window settings panel (Tab, or click the status bar). Drawn over the picture
 in the app's own black-and-white style, so it looks the same on every platform.
 
-Two tabs (Look / Characters) keep everything on one screen -- no
+Three tabs (Look / Characters / Audio) keep everything on one screen -- no
 scrolling -- with large click targets, hover feedback and a Randomize button that
 is always visible. Everything changes live and lasts for the session only. The
 panel knows nothing about the visualizer: it reads and writes a Config and calls
@@ -16,6 +16,7 @@ import numpy as np
 import pygame
 
 from .config import GLYPH_CELL_STEPS, GLYPH_SETS, PIXEL_STEPS, Config
+from .engines import VERSIONS, elements_of
 from .glyphs import glyph_set
 
 BG = (10, 10, 10, 250)
@@ -25,12 +26,14 @@ LINE = (62, 62, 62)
 HOVER = (28, 28, 28)
 ACCENT = (245, 245, 245)
 FONT_CANDIDATES = "segoeui,helveticaneue,helvetica,arial,dejavusans,sans"
-TABS = [("look", "Look"), ("chars", "Characters")]
+TABS = [("look", "Look"), ("versions", "Versions"), ("mix", "Mix"), ("chars", "Glyphs"), ("audio", "Audio"),
+        ("presets", "Presets")]
+MAX_SOURCES = 6   # "All system audio" plus up to five apps
 
 
 @dataclass
 class Row:
-    kind: str               # toggle | stepper | slider | choice | chips | preview | button | note
+    kind: str               # toggle | stepper | slider | choice | chips | preview | button | note | sources
     label: str = ""
     rect: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 0, 0))
     parts: list = field(default_factory=list)   # (rect, payload) for the clickable pieces
@@ -54,11 +57,16 @@ class Ctl:
 
 class SettingsPanel:
     def __init__(self, cfg: Config, on_change: Callable[[str], None], on_reshuffle: Callable[[], None],
-                 on_randomize: Callable[[], None]) -> None:
+                 on_randomize: Callable[[], None], audio=None, on_randomize_within: Callable[[], None] | None = None,
+                 presets=None) -> None:
         self.cfg = cfg
+        self.audio = audio      # an AudioRouter (or anything with options/select/selected/notice/supported)
+        self.presets = presets  # a PresetManager (or anything with options/choose/save/share/paste/delete)
         self.on_change = on_change
         self.on_reshuffle = on_reshuffle
         self.on_randomize = on_randomize
+        self.on_randomize_within = on_randomize_within or on_randomize
+        self._editing = cfg.versions[0] if cfg.versions else VERSIONS[0][0]   # whose elements the Versions tab shows
         self.visible = False
         self.tab = "look"
         self.hover: Row | None = None
@@ -101,13 +109,20 @@ class SettingsPanel:
             Ctl("stepper", "Pixel size", "look", lambda: c.pixel_size, s("pixel_size"), options=PIXEL_STEPS, fmt="{} px", visible=pixels_on),
             Ctl("stepper", "Character size", "look", lambda: c.glyph_cell, s("glyph_cell"), options=GLYPH_CELL_STEPS, fmt="{} px", visible=chars_on),
             Ctl("stepper", "Bit depth", "look", lambda: c.bit_depth, s("bit_depth"), options=[1, 2, 3, 4], fmt="{}-bit"),
-            Ctl("slider", "3D depth", "look", lambda: c.depth, s("depth"), lo=0.0, hi=1.0),
-            Ctl("slider", "Sensitivity", "look", lambda: c.gain, s("gain"), lo=0.4, hi=3.0, fmt="{:.1f}x"),
+            Ctl("slider", "Intensity  (subtle - jarring)", "look", lambda: c.intensity, s("intensity"), lo=0.0, hi=2.0, fmt="{:.1f}x"),
+            Ctl("slider", "Decay", "look", lambda: c.pixel_decay, s("pixel_decay"), lo=0.0, hi=0.9, fmt="{:.2f}"),
             Ctl("slider", "Overlap inversion", "look", lambda: c.overlap_invert, s("overlap_invert"), lo=0.0, hi=1.0),
             Ctl("toggle", "Fullscreen", "look", lambda: c.fullscreen, s("fullscreen")),
             Ctl("toggle", "New layout on every song", "look", lambda: c.reshuffle_on_new_song, s("reshuffle_on_new_song")),
             Ctl("toggle", "Track and status bar text", "look", lambda: c.show_now_playing, s("show_now_playing")),
             Ctl("button", "Reshuffle the layout now", "look", action=self.on_reshuffle),
+
+            Ctl("note", "Each part of the sound draws its own shape. Turn any of them up or down.", "mix"),
+            Ctl("slider", "Bass / kick  (ink)", "mix", lambda: c.mix_bass, s("mix_bass"), lo=0.0, hi=2.0, fmt="{:.1f}x"),
+            Ctl("slider", "Low mids  (orbs)", "mix", lambda: c.mix_lowmid, s("mix_lowmid"), lo=0.0, hi=2.0, fmt="{:.1f}x"),
+            Ctl("slider", "Vocals / melody  (rings)", "mix", lambda: c.mix_vocals, s("mix_vocals"), lo=0.0, hi=2.0, fmt="{:.1f}x"),
+            Ctl("slider", "Snare / high mids  (stars)", "mix", lambda: c.mix_highmid, s("mix_highmid"), lo=0.0, hi=2.0, fmt="{:.1f}x"),
+            Ctl("slider", "Hats / treble  (sand)", "mix", lambda: c.mix_treble, s("mix_treble"), lo=0.0, hi=2.0, fmt="{:.1f}x"),
 
 
             Ctl("note", "Switch “Draw with” to Characters on the Look tab to use these.", "chars", visible=pixels_on),
@@ -117,6 +132,79 @@ class SettingsPanel:
                 options=[("random", "Random"), ("brightness", "By brightness")]),
             Ctl("stepper", "Character size", "chars", lambda: c.glyph_cell, s("glyph_cell"), options=GLYPH_CELL_STEPS, fmt="{} px"),
         ]
+
+    def _version_controls(self) -> list[Ctl]:
+        """Pick versions (several = fused), then switch each one's elements on or off."""
+        c = self.cfg
+        order = [k for k, _ in VERSIONS]
+
+        def toggle_version(key):
+            cur = list(c.versions)
+            if key in cur:
+                if len(cur) > 1:                       # always keep at least one version drawing
+                    cur.remove(key)
+            else:
+                cur.append(key)
+                self._editing = key
+            c.versions = [k for k in order if k in cur]
+            self.on_change("versions")
+
+        if self._editing not in c.versions:
+            self._editing = c.versions[0]
+        editing = self._editing
+
+        def set_editing(key):
+            self._editing = key
+
+        def toggle_element(key):
+            cur = list(c.elements.get(editing, []))
+            if key in cur:
+                if len(cur) > 1:                       # a version always keeps at least one element
+                    cur.remove(key)
+            else:
+                cur.append(key)
+            c.elements[editing] = [k for k, _ in elements_of(editing) if k in cur]
+            self.on_change("elements")
+
+        return [
+            Ctl("chips", "Versions  (pick several to fuse them)", "versions", lambda: c.versions, toggle_version, options=VERSIONS),
+            Ctl("choice", "Elements of", "versions", lambda: self._editing, set_editing,
+                options=[(k, k.upper()) for k in c.versions]),
+            Ctl("chips", dict(VERSIONS)[editing], "versions", lambda: c.elements.get(editing, []), toggle_element,
+                options=elements_of(editing)),
+            Ctl("button", "Randomize within these versions", "versions", action=self.on_randomize_within),
+            Ctl("note", "Randomize (below) shuffles across every version and element.", "versions"),
+        ]
+
+    def _preset_controls(self) -> list[Ctl]:
+        p = self.presets
+        if p is None:
+            return [Ctl("note", "Presets aren't available here.", "presets")]
+        out = [
+            Ctl("sources", "Presets  (click one to apply it)", "presets", lambda: p.selected, p.choose, options=p.options()),
+            Ctl("button", "Save the current look as a preset", "presets", action=p.save),
+            Ctl("button", "Copy a share code", "presets", action=p.share),
+            Ctl("button", "Paste a shared preset", "presets", action=p.paste),
+        ]
+        if p.can_delete():
+            out.append(Ctl("button", "Delete this preset", "presets", action=p.delete))
+        out.append(Ctl("note", p.message or "Presets are saved on this computer; a share code carries a look to anyone.", "presets"))
+        return out
+
+    def _audio_controls(self) -> list[Ctl]:
+        a = self.audio
+        if a is None:
+            return [Ctl("note", "Choosing the audio source isn't available here.", "audio")]
+        out = [Ctl("sources", "Listen to", "audio", lambda: a.selected, a.select, options=a.options()[:MAX_SOURCES])]
+        if not a.supported:
+            out.append(Ctl("note", "Picking a single app needs Windows 10 (version 2004) or newer. Here the picture follows "
+                                   "all system audio, or the input device on macOS and Linux.", "audio"))
+        elif a.notice:
+            out.append(Ctl("note", a.notice, "audio"))
+        else:
+            out.append(Ctl("note", "Only apps that are making sound (or have made some) are listed. Start playing "
+                                   "something and it appears here.", "audio"))
+        return out
 
     # -- open / close ------------------------------------------------------------
 
@@ -152,9 +240,20 @@ class SettingsPanel:
             self._text[key] = surf
         return surf
 
+    def _wrap(self, text: str, px: int, width: int) -> list[str]:
+        font, lines, line = self._font(px), [], ""
+        for word in text.split():
+            trial = (line + " " + word).strip()
+            if font.size(trial)[0] > width and line:
+                lines.append(line)
+                line = word
+            else:
+                line = trial
+        return lines + [line]
+
     def layout(self, screen_w: int, field_h: int) -> list[Row]:
         ui = max(0.75, min(1.7, field_h / 720))
-        width = int(min(screen_w - 16, 366 * ui))
+        width = int(min(screen_w - 16, 420 * ui))
         self._panel = pygame.Rect(screen_w - width, 0, width, field_h)
         pad = int(18 * ui)
         x0, x1 = self._panel.x + pad, self._panel.right - pad
@@ -172,7 +271,28 @@ class SettingsPanel:
 
         body_top = ty + th + int(14 * ui)
         body_bottom = self._header["randomize"].top - int(12 * ui)
-        controls = [c for c in self._controls if c.tab == self.tab and c.visible()]
+        if self.tab == "audio":
+            if self.audio is not None:
+                self.audio.request_refresh()         # cheap and rate-limited; runs on a background thread
+            controls = self._audio_controls()
+        elif self.tab == "versions":
+            controls = self._version_controls()
+        elif self.tab == "presets":
+            controls = self._preset_controls()
+        else:
+            controls = [c for c in self._controls if c.tab == self.tab and c.visible()]
+
+        def note_height(text: str) -> int:
+            return len(self._wrap(text, int(12 * ui), x1 - x0)) * int(16 * ui) + int(12 * ui)
+
+        def chip_lines(c: Ctl) -> int:
+            lines, cx = 1, x0
+            for _, label in c.options:
+                w = f.size(label)[0] + int(26 * ui)
+                if cx + w > x1 and cx > x0:
+                    lines, cx = lines + 1, x0
+                cx += w + int(8 * ui)
+            return lines
 
         def heights(row_h: int) -> list[int]:
             out = []
@@ -180,11 +300,14 @@ class SettingsPanel:
                 if c.kind == "slider":
                     out.append(int(row_h * 1.4))
                 elif c.kind == "chips":
-                    out.append(int(row_h * 0.75) + int(row_h * 0.85) * (1 + (len(c.options) > 3 and width < 380 * ui)))
+                    n = chip_lines(c)
+                    out.append(int(row_h * 0.75) + int(row_h * 0.75) * n + int(6 * ui) * (n - 1) + int(row_h * 0.12))
                 elif c.kind == "preview":
                     out.append(int(row_h * 1.15))
                 elif c.kind == "note":
-                    out.append(int(row_h * 1.4))
+                    out.append(note_height(c.label))
+                elif c.kind == "sources":
+                    out.append(int(row_h * 0.7) + len(c.options) * int(row_h * 0.9))
                 else:
                     out.append(row_h)
             return out
@@ -214,12 +337,16 @@ class SettingsPanel:
                 cx, cy, ch_h = x0, y + int(row_h * 0.75), int(row_h * 0.75)
                 for key, label in c.options:
                     w = f.size(label)[0] + int(26 * ui)
-                    if cx + w > x1:
+                    if cx + w > x1 and cx > x0:
                         cx, cy = x0, cy + ch_h + int(6 * ui)
                     r.parts.append((pygame.Rect(cx, cy, w, ch_h), key))
                     cx += w + int(8 * ui)
             elif k == "button":
                 r.parts = [(pygame.Rect(x0, y + int(3 * ui), x1 - x0, h - int(6 * ui)), None)]
+            elif k == "sources":
+                item_h = int(row_h * 0.9)
+                top = y + int(row_h * 0.7)
+                r.parts = [(pygame.Rect(x0, top + i * item_h, x1 - x0, item_h - int(4 * ui)), opt[0]) for i, opt in enumerate(c.options)]
             rows.append(r)
             y += h
         self._rows = rows
@@ -319,10 +446,12 @@ class SettingsPanel:
                     opts, cur = ctl.options, ctl.get()
                     i = min(range(len(opts)), key=lambda j: abs(opts[j] - cur))
                     ctl.set(opts[max(0, min(len(opts) - 1, i + d))])
-        elif k in ("choice", "chips"):
+        elif k in ("choice", "chips", "sources"):
             for rect, payload in r.parts:
                 if rect.collidepoint(pos):
                     ctl.set(payload)
+                    if k == "sources":
+                        self.on_change("audio_source" if ctl.tab == "audio" else "preset")
 
     def _set_slider(self, r: Row, x: int) -> None:
         track = r.parts[0][0]
@@ -459,17 +588,28 @@ class SettingsPanel:
                 pygame.draw.rect(surface, HOVER if hov else BG[:3], rect, border_radius=8)
                 pygame.draw.rect(surface, DIM if hov else LINE, rect, 1, border_radius=8)
                 text(ctl.label, int(15 * ui), FG, rect.center, center=True)
-            elif k == "note":
-                words, line, y = ctl.label.split(), "", rc.y
-                for w in words:
-                    trial = (line + " " + w).strip()
-                    if self._font(int(12 * ui)).size(trial)[0] > rc.width and line:
-                        text(line, int(12 * ui), DIM, (rc.x, y))
-                        y += int(16 * ui)
-                        line = w
+            elif k == "sources":
+                text(ctl.label, int(15 * ui), FG, (rc.x, rc.y + int(rc.height * 0.02)))
+                chosen = ctl.get()
+                for (rect, key), (_, label, note) in zip(r.parts, ctl.options):
+                    on, hov = key == chosen, rect.collidepoint(mouse)
+                    radius = rect.height // 2
+                    if on:
+                        pygame.draw.rect(surface, ACCENT, rect, border_radius=radius)
                     else:
-                        line = trial
-                text(line, int(12 * ui), DIM, (rc.x, y))
+                        pygame.draw.rect(surface, HOVER if hov else BG[:3], rect, border_radius=radius)
+                        pygame.draw.rect(surface, DIM if hov else LINE, rect, 1, border_radius=radius)
+                    fg, sub = ((0, 0, 0), (70, 70, 70)) if on else (FG, DIM)
+                    pygame.draw.circle(surface, fg, (rect.x + int(16 * ui), rect.centery), int(5 * ui),
+                                       0 if (on or note == "playing") else 1)
+                    text(label, int(15 * ui), fg, (rect.x + int(30 * ui), rect.centery), midleft=True)
+                    if note:
+                        text(note, int(12 * ui), sub, (rect.right - int(14 * ui), rect.centery), right=True)
+            elif k == "note":
+                y = rc.y
+                for line in self._wrap(ctl.label, int(12 * ui), rc.width):
+                    text(line, int(12 * ui), DIM, (rc.x, y))
+                    y += int(16 * ui)
 
         rz = hp["randomize"]
         hov = rz.collidepoint(mouse)

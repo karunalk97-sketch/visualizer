@@ -1,11 +1,23 @@
-"""Audio sources. WasapiLoopbackSource captures whatever is currently playing
-on the default Windows output device (system audio, no virtual cable needed).
-SyntheticSource generates a sweeping test tone so the rest of the pipeline can
-be developed/demoed on any OS, including this one, without real hardware.
+"""Audio sources.
+
+* WasapiLoopbackSource   -- everything playing on the default Windows output device
+                            (no virtual cable). Survives the output device changing
+                            or disappearing: it re-opens instead of ending.
+* AppLoopbackSource      -- ONE application's audio only (Windows 10 2004+ / 11),
+                            via WASAPI process loopback, so the picture follows
+                            Spotify or a browser instead of "whatever the PC is playing".
+* InputDeviceSource      -- macOS / Linux input device (microphone or a virtual
+                            loopback device such as BlackHole).
+* SyntheticSource        -- a sweeping test tone, for demos and tests.
+
+Every source exposes `sample_rate` and `frames(chunk_size)`, a generator that yields
+the *latest* `chunk_size` mono samples each time it is asked. It never blocks, never
+builds up a backlog (so the picture never lags behind the music), and never ends on
+its own (silence is yielded while nothing is playing).
 """
 from __future__ import annotations
 
-import queue
+import threading
 import time
 from typing import Iterator, Protocol
 
@@ -19,82 +31,249 @@ class AudioSource(Protocol):
         ...
 
 
+class RollingWindow:
+    """The most recent samples of a mono signal. Analysis reads the latest window
+    every frame, so it works at any frame rate and any packet size."""
+
+    def __init__(self, size: int = 8192) -> None:
+        self.buf = np.zeros(size, dtype=np.float32)
+
+    def push(self, mono: np.ndarray) -> None:
+        n = len(mono)
+        if n == 0:
+            return
+        size = len(self.buf)
+        if n >= size:
+            self.buf[:] = mono[-size:]
+        else:
+            self.buf[:-n] = self.buf[n:]
+            self.buf[-n:] = mono
+
+    def push_silence(self, n: int) -> None:
+        if n > 0:
+            self.push(np.zeros(min(n, len(self.buf)), dtype=np.float32))
+
+    def latest(self, n: int) -> np.ndarray:
+        return self.buf[-n:].copy()
+
+
+class LatestWindow:
+    """Thread-safe rolling window fed by an audio callback, read by the render loop.
+    Reading always returns the newest audio, so a slow frame never makes the picture
+    lag behind the music (a queue would pile up stale buffers). Capture APIs deliver
+    nothing while the output is silent, so after a short gap it pads with silence."""
+
+    GAP_SECONDS = 0.06
+
+    def __init__(self, sample_rate: int, size: int = 16384, clock=time.monotonic) -> None:
+        self.sample_rate = sample_rate
+        self._win = RollingWindow(size)
+        self._lock = threading.Lock()
+        self._clock = clock
+        self._last = self._padded = clock()
+
+    def push(self, mono: np.ndarray) -> None:
+        with self._lock:
+            self._win.push(mono)
+            self._last = self._clock()
+
+    def latest(self, n: int) -> np.ndarray:
+        now = self._clock()
+        with self._lock:
+            if now - self._last > self.GAP_SECONDS:
+                start = max(self._last, self._padded)
+                self._win.push_silence(int((now - start) * self.sample_rate))
+                self._padded = now
+            return self._win.latest(n)
+
+
 class SyntheticSource:
     """Generates a mix of tones sweeping across the audible range, useful for
-    testing/demoing the visualizer without a real audio device or on non-Windows
-    machines where WASAPI loopback isn't available.
+    testing/demoing the visualizer without a real audio device or on machines
+    where no capture is available.
     """
 
-    def __init__(self, sample_rate: int = 48000, sweep_seconds: float = 8.0) -> None:
+    def __init__(self, sample_rate: int = 48000, sweep_seconds: float = 8.0, clock=time.monotonic) -> None:
         self.sample_rate = sample_rate
         self.sweep_seconds = sweep_seconds
-        self._t = 0.0
+        self._clock = clock
+        self._t0 = clock()
 
     def frames(self, chunk_size: int) -> Iterator[np.ndarray]:
         dt = 1.0 / self.sample_rate
         while True:
-            t = self._t + np.arange(chunk_size) * dt
+            # the window that ends "now", like a live source
+            end = self._clock() - self._t0
+            t = end - (chunk_size - 1 - np.arange(chunk_size)) * dt
             phase = (t % self.sweep_seconds) / self.sweep_seconds
             freq = 80.0 * (200.0 ** phase)  # 80 Hz -> 16 kHz sweep
             bass = 0.6 * np.sin(2 * np.pi * 60.0 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 0.25 * t))
+            beat = np.exp(-((t * 2.0) % 1.0) * 18.0)                     # a kick twice a second
+            kick = 0.7 * np.sin(2 * np.pi * 55.0 * t) * beat
             sweep = 0.4 * np.sin(2 * np.pi * freq * t)
-            samples = (bass + sweep).astype(np.float32)
-            self._t += chunk_size * dt
-            yield samples
-            time.sleep(chunk_size / self.sample_rate)
+            yield (bass * 0.6 + kick + sweep).astype(np.float32)
+            time.sleep(0.004)
+
+    def close(self) -> None:
+        pass
 
 
 class WasapiLoopbackSource:
     """Windows-only: captures the default output device's loopback stream via
     pyaudiowpatch (a WASAPI-patched fork of PyAudio). Import is deferred so the
     rest of the codebase stays importable on non-Windows machines.
+
+    If the default output device changes (headphones plugged in, output switched)
+    or the stream dies, capture re-opens on the new default device instead of
+    ending; while no device is available it yields silence.
     """
+
+    POLL_SECONDS = 3.0
 
     def __init__(self) -> None:
         import pyaudiowpatch as pyaudio  # noqa: F401  (Windows-only dependency)
 
         self._pyaudio_module = pyaudio
-        self._pa = pyaudio.PyAudio()
-        device = self._pa.get_default_wasapi_loopback()
-        self.sample_rate = int(device["defaultSampleRate"])
-        self._device_index = device["index"]
-        self._channels = device["maxInputChannels"]
+        pa = pyaudio.PyAudio()
+        try:
+            device = pa.get_default_wasapi_loopback()   # fail early if there is no usable device
+            self.sample_rate = int(device["defaultSampleRate"])
+            self._device_key = (device["index"], device["name"])
+        finally:
+            pa.terminate()
+        self._changed = threading.Event()
+        self._closed = threading.Event()
+
+    def _default_device(self):
+        pa = self._pyaudio_module.PyAudio()
+        try:
+            return pa.get_default_wasapi_loopback()
+        finally:
+            pa.terminate()
+
+    def _watch(self) -> None:
+        """Flags a change of the default output device (PyAudio only sees devices
+        that existed when it was created, so a fresh instance is needed)."""
+        while not self._closed.wait(self.POLL_SECONDS):
+            try:
+                dev = self._default_device()
+                if (dev["index"], dev["name"]) != self._device_key:
+                    self._changed.set()
+            except Exception:
+                self._changed.set()   # device gone: try to re-open
 
     def frames(self, chunk_size: int) -> Iterator[np.ndarray]:
-        q: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
-
-        def callback(in_data, frame_count, time_info, status):
-            data = np.frombuffer(in_data, dtype=np.float32).reshape(-1, self._channels)
+        threading.Thread(target=self._watch, daemon=True).start()
+        pyaudio = self._pyaudio_module
+        while not self._closed.is_set():
+            pa = stream = None
             try:
-                q.put_nowait(data)
-            except queue.Full:
-                pass
-            return (None, self._pyaudio_module.paContinue)
+                pa = pyaudio.PyAudio()
+                device = pa.get_default_wasapi_loopback()
+                channels = int(device["maxInputChannels"])
+                self.sample_rate = int(device["defaultSampleRate"])
+                self._device_key = (device["index"], device["name"])
+                self._changed.clear()
+                window = LatestWindow(self.sample_rate)
 
-        stream = self._pa.open(
-            format=self._pyaudio_module.paFloat32,
-            channels=self._channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self._device_index,
-            frames_per_buffer=chunk_size,
-            stream_callback=callback,
-        )
-        stream.start_stream()
-        try:
-            while stream.is_active():
-                # WASAPI loopback delivers nothing while the PC is silent; yield
-                # silence instead of blocking so the window stays responsive.
+                def callback(in_data, frame_count, time_info, status, window=window, channels=channels):
+                    window.push(np.frombuffer(in_data, dtype=np.float32).reshape(-1, channels).mean(axis=1))
+                    return (None, pyaudio.paContinue)
+
+                stream = pa.open(
+                    format=pyaudio.paFloat32, channels=channels, rate=self.sample_rate, input=True,
+                    input_device_index=device["index"], frames_per_buffer=512, stream_callback=callback,
+                )
+                stream.start_stream()
+                while stream.is_active() and not self._changed.is_set() and not self._closed.is_set():
+                    # always the newest audio: the picture never lags behind the music;
+                    # silence (loopback sends nothing) is padded in, so this never blocks
+                    yield window.latest(chunk_size)
+            except GeneratorExit:
+                raise
+            except Exception:
+                # No output device right now (or it just vanished): show silence, try again.
+                for _ in range(25):
+                    yield np.zeros(chunk_size, dtype=np.float32)
+                    time.sleep(0.04)
+            finally:
                 try:
-                    yield q.get(timeout=0.05)
-                except queue.Empty:
-                    yield np.zeros((chunk_size, self._channels), dtype=np.float32)
-        finally:
-            stream.stop_stream()
-            stream.close()
+                    if stream is not None:
+                        stream.stop_stream()
+                        stream.close()
+                except Exception:
+                    pass
+                try:
+                    if pa is not None:
+                        pa.terminate()
+                except Exception:
+                    pass
 
     def close(self) -> None:
-        self._pa.terminate()
+        self._closed.set()
+
+
+class AppLoopbackSource:
+    """Windows 10 2004+ / 11: captures ONE application's audio (and the processes
+    it starts) with WASAPI process loopback, so the picture follows Spotify or a
+    browser rather than everything the PC is playing.
+
+    `native` is the low-level capture object (proctap's ProcessLoopback); it is
+    injectable so this can be tested without real audio.
+    """
+
+    IDLE_SECONDS = 0.06   # after this long with no packets, the app is treated as silent
+
+    def __init__(self, pid: int, name: str = "", native=None) -> None:
+        if native is None:
+            from proctap._native import ProcessLoopback  # type: ignore[import-not-found]
+            native = ProcessLoopback(pid)
+        self.pid = pid
+        self.name = name
+        self._native = native
+        fmt = native.get_format()
+        self.sample_rate = int(fmt["sample_rate"])
+        self._channels = max(1, int(fmt["channels"]))
+        self._bits = int(fmt["bits_per_sample"])
+        self._window = RollingWindow()
+        self._closed = threading.Event()
+
+    def _to_mono(self, data: bytes) -> np.ndarray:
+        if self._bits == 16:
+            a = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        else:
+            a = np.frombuffer(data, dtype=np.float32)
+        usable = len(a) // self._channels * self._channels
+        return a[:usable].reshape(-1, self._channels).mean(axis=1)
+
+    def frames(self, chunk_size: int) -> Iterator[np.ndarray]:
+        self._native.start()
+        last_data = last_pad = time.monotonic()
+        try:
+            while not self._closed.is_set():
+                got = False
+                while True:                                   # drain everything that has arrived
+                    data = self._native.read()
+                    if not data:
+                        break
+                    self._window.push(self._to_mono(data))
+                    got = True
+                now = time.monotonic()
+                if got:
+                    last_data = last_pad = now
+                elif now - last_data > self.IDLE_SECONDS:     # nothing arriving: the app is silent, let the window drain to zero
+                    self._window.push_silence(int((now - last_pad) * self.sample_rate))
+                    last_pad = now
+                yield self._window.latest(chunk_size)
+                time.sleep(0.004)
+        finally:
+            try:
+                self._native.stop()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        self._closed.set()
 
 
 class InputDeviceSource:
@@ -122,25 +301,21 @@ class InputDeviceSource:
         self._channels = max(1, min(2, int(info["max_input_channels"])))
         self.sample_rate = int(info["default_samplerate"])
         self.device_name = info["name"]
+        self._closed = threading.Event()
 
     def frames(self, chunk_size: int) -> Iterator[np.ndarray]:
-        q: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
+        window = LatestWindow(self.sample_rate)
 
         def callback(indata, frame_count, time_info, status):
-            try:
-                q.put_nowait(indata.copy())
-            except queue.Full:
-                pass
+            window.push(indata.mean(axis=1).astype(np.float32))
 
         with self._sd.InputStream(
             device=self._device, channels=self._channels, samplerate=self.sample_rate,
-            blocksize=chunk_size, dtype="float32", callback=callback,
+            blocksize=512, dtype="float32", callback=callback,
         ):
-            while True:
-                try:
-                    yield q.get(timeout=0.05)
-                except queue.Empty:
-                    yield np.zeros((chunk_size, self._channels), dtype=np.float32)
+            while not self._closed.is_set():
+                yield window.latest(chunk_size)          # always the newest audio, never a backlog
+                time.sleep(0.002)
 
     def close(self) -> None:
-        pass
+        self._closed.set()

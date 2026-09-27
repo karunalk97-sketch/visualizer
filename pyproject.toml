@@ -13,6 +13,10 @@ dependencies = [
     "winrt-Windows.Foundation.Collections; sys_platform == 'win32'",
     "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
     "winrt-Windows.Media.Control; sys_platform == 'win32'",
+    # Windows: capture a single application's audio (process loopback) and list apps making sound
+    "proc-tap; sys_platform == 'win32'",
+    "pycaw; sys_platform == 'win32'",
+    "psutil; sys_platform == 'win32'",
     # macOS / Linux: input-device capture
     "sounddevice>=0.4; sys_platform != 'win32'",
 ]

@@ -48,16 +48,33 @@ class BitmapRenderer:
             self._fonts[px] = pygame.font.SysFont(FONT_CANDIDATES, px)
         return self._fonts[px]
 
+    @staticmethod
+    def fit_text(font: pygame.font.Font, text: str, max_width: int) -> str:
+        """Shorten text with an ellipsis so it fits in max_width pixels."""
+        if font.size(text)[0] <= max_width:
+            return text
+        ellipsis = "…"
+        while len(text) > 1 and font.size(text + ellipsis)[0] > max_width:
+            text = text[:-1]
+        return text.rstrip() + ellipsis if max_width > font.size(ellipsis)[0] else ""
+
     def _draw_bar(self, left_text: str, right_text: str) -> None:
         bar = pygame.Rect(0, self.field_h, self.screen_width, self.bar_h)
         self.screen.fill(BLACK, bar)
         pad = max(10, self.bar_h // 2)
-        if left_text:
-            img = self._font.render(left_text, True, TEXT)
-            self.screen.blit(img, (pad, bar.centery - img.get_height() // 2))
+        right_w = 0
         if right_text:
+            right_text = self.fit_text(self._font, right_text, max(0, self.screen_width - 2 * pad))
             img = self._font.render(right_text, True, TEXT_DIM)
-            self.screen.blit(img, (self.screen_width - img.get_width() - pad, bar.centery - img.get_height() // 2))
+            right_w = img.get_width()
+            self.screen.blit(img, (self.screen_width - right_w - pad, bar.centery - img.get_height() // 2))
+        if left_text:
+            # a long song title must not run into the status text on the right
+            room = self.screen_width - right_w - pad * (3 if right_w else 2)
+            left_text = self.fit_text(self._font, left_text, max(0, room))
+            if left_text:
+                img = self._font.render(left_text, True, TEXT)
+                self.screen.blit(img, (pad, bar.centery - img.get_height() // 2))
 
     def _finish(self, left_text: str, right_text: str) -> None:
         self._draw_bar(left_text, right_text)

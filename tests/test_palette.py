@@ -33,11 +33,20 @@ def test_quantize_zero_intensity_is_solid_darkest():
     assert (black == np.array(colors[0])).all()
 
 
-def test_quantize_max_intensity_is_mostly_brightest():
-    # ordered dithering can round one specific dither-matrix cell down a
-    # level even at full intensity (that's what makes it dithering); assert
-    # the overwhelming majority still hit the brightest color.
-    colors = grayscale_palette(2)
-    white = quantize(np.ones((8, 8), dtype=np.float32), colors)
-    match = np.all(white == np.array(colors[-1]), axis=-1)
-    assert match.mean() >= 0.9
+def test_solid_white_and_black_stay_solid_at_every_bit_depth():
+    # no stray dots in solid areas: full white must be all white, zero all black
+    for bits in (1, 2, 3, 4):
+        colors = grayscale_palette(bits)
+        white = quantize(np.ones((8, 8), dtype=np.float32), colors)
+        black = quantize(np.zeros((8, 8), dtype=np.float32), colors)
+        assert (white == np.array(colors[-1])).all(), bits
+        assert (black == np.array(colors[0])).all(), bits
+
+
+def test_dithered_grey_covers_the_right_share():
+    # a mid grey at 1-bit lights about half the cells; 25% lights about a quarter
+    colors = grayscale_palette(1)
+    for level in (0.25, 0.5, 0.75):
+        img = quantize(np.full((16, 16), level, dtype=np.float32), colors)
+        lit = np.all(img == np.array(colors[-1]), axis=-1).mean()
+        assert abs(lit - level) < 0.07, (level, lit)
