@@ -1,27 +1,30 @@
-"""Surf: waves of sea foam rolling over the picture like water over a beach.
+"""The foam line: one smooth line of foam that sweeps across the picture.
 
-Each wave is an event, born when a synth, pad, chord or held vocal note begins
-(or the note changes, or a long held note "breathes"). It always spans a whole
-edge of the screen -- bottom, top, left or right, a different one each time --
-and rolls inward: a quick uprush, a pause, then a slower backwash. The front is
-never straight and never repeats: every wave draws its own irregular shoreline
-(a blend of slow undulations plus a couple of "fingers" of water running ahead),
-and that shoreline keeps shifting as the wave travels.
+Think of the crest of a wave -- just the thick foam, nothing behind it. Each wave
+is an event, born when a synth, pad, chord or held vocal note begins (or the note
+changes, or a long held note "breathes"). It enters from one edge of the screen (a
+different edge each time), spans the whole edge, and travels across to the far
+side and off it. That is all: no wash of water behind it, no wet sand, no
+retreat.
 
-* the leading edge carries stippled, bubbling foam;
-* behind it the water sheet inverts what it covers, thinning towards the shore
-  side, and the sand it leaves behind stays faintly inverted while it "dries";
-* the music sets the size and character: louder notes run further up the beach,
-  low sounds make wide coarse foam and bright sounds a fine sparkling line,
-  and rich harmonic sounds make a more ragged shoreline.
+The line is shaped by the music, and it stays shaped by it while it travels:
 
-Between notes there can be no waves at all, and in silence everything fades out.
-`compose` inverts whatever is beneath the surf: white -> black, gray flips, and
-over black it shows white, so it reads as a depth map across the picture.
+* the sustained tonal energy in the mid and high range -- what synths, pads and
+  harmonies are doing, not the drums -- is smoothed into a gentle profile along the
+  line: where that energy is strong the line bulges forward *and* thickens, where
+  it is weak the line thins and trails;
+* smoothing is heavy on purpose, so the line is a soft flowing curve with no
+  jagged edges, and its edges fade gaussian-soft;
+* louder notes cross faster, low sounds make a thicker line, bright sounds a
+  thinner one.
+
+The line carries a soft bubbly foam texture. `compose` inverts whatever is beneath
+it: over black it shows as bright foam, over white it cuts black, over gray it
+flips the gray.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -29,24 +32,21 @@ import numpy as np
 _LAYER_EDGES = (0.29, 0.47, 0.65, 0.84, 1.0)
 EDGES = ("bottom", "top", "left", "right")
 MAX_WAVES = 2
-_OCTAVE_BINS = 11  # one octave on the 96-bin, 40 Hz - 16 kHz log axis (~11.1 bins)
+PROFILE_POINTS = 48    # samples of the music's shape along the line
+_OCTAVE_BINS = 11      # one octave on the 96-bin, 40 Hz - 16 kHz log axis (~11.1 bins)
+_MARGIN = 0.34         # the line starts and ends this far outside the screen (room for its bulge and thickness)
 
 
 @dataclass
 class Wave:
     edge: str
-    reach: float          # furthest inland it runs, as a fraction of the screen (0..1)
-    wobble: float         # how ragged the shoreline is
-    foam_width: float     # thickness of the foam line
+    width: float          # thickness of the line where the music is strong (fraction of the screen)
+    bulge: float          # how far the music can push the line forward
     amp: float
-    life: int
-    freqs: np.ndarray     # shoreline undulations: cycles across the edge
-    phases: np.ndarray
-    rates: np.ndarray     # how fast each undulation drifts
-    amps: np.ndarray
-    fingers: list         # (centre 0..1, width, height, drift) tongues of water running ahead
+    life: int             # frames to cross the screen
+    flip: bool            # which end of the line the low frequencies sit at
+    profile: np.ndarray   # (PROFILE_POINTS,) smoothed sustained energy along the line, 0..1
     foam: np.ndarray      # (h, w) bubble texture, scrolled as the wave moves
-    hold: float = 0.15    # share of its life spent at the furthest point
     age: int = 0
     foam_off: float = 0.0
 
@@ -56,17 +56,18 @@ def _smoothstep(lo: float, hi: float, x: np.ndarray) -> np.ndarray:
     return t * t * (3.0 - 2.0 * t)
 
 
-def swash(t: float, hold: float) -> float:
-    """Where the water is at life fraction t: 0 at the shore, 1 at the furthest
-    point. A quick uprush, a pause, then a slower backwash."""
-    up_end = 0.26
-    down_start = up_end + hold
-    if t < up_end:
-        return 1.0 - (1.0 - t / up_end) ** 2.4
-    if t < down_start:
-        return 1.0
-    s = (t - down_start) / max(1e-6, 1.0 - down_start)
-    return max(0.0, 1.0 - s) ** 1.7
+def smooth_profile(values: np.ndarray, points: int = PROFILE_POINTS, passes: int = 4) -> np.ndarray:
+    """Resample a spectrum to `points` samples and blur it heavily: a gentle,
+    flowing shape with no sharp peaks, normalised to 0..1."""
+    v = np.asarray(values, dtype=np.float32)
+    if v.max() <= 1e-9:
+        return np.zeros(points, dtype=np.float32)
+    out = np.interp(np.linspace(0, len(v) - 1, points), np.arange(len(v)), v).astype(np.float32)
+    kernel = np.array([1, 4, 6, 4, 1], dtype=np.float32) / 16.0
+    for _ in range(passes):
+        out = np.convolve(np.pad(out, 2, mode="edge"), kernel, mode="valid")
+    lo, hi = float(out.min()), float(out.max())                       # stretch to the full range so the shape shows
+    return ((out - lo) / max(hi - lo, 1e-9)).astype(np.float32) if hi - lo > 1e-6 * hi else np.full(points, 0.5, np.float32)
 
 
 class WaveField:
@@ -82,12 +83,13 @@ class WaveField:
     ) -> None:
         self.num_bins = num_bins
         self.strength = strength
-        self.softness = softness  # 0 = crisper waterline, 1 = very feathered
+        self.softness = softness  # 0 = crisper edges, 1 = very feathered
         self.rate = rate          # how often waves are born (2 = twice as often)
         self._rng = np.random.default_rng(seed)
         self._edges = [int(round(f * num_bins)) for f in _LAYER_EDGES]
         self._n = len(_LAYER_EDGES) - 1
         self._slow = np.zeros(num_bins, dtype=np.float32)
+        self._sustained = np.zeros(num_bins, dtype=np.float32)
         self._peak_ref = 0.0
         self._seg_ref = np.zeros(self._n, dtype=np.float32)
         self._presence = 0.0
@@ -111,15 +113,15 @@ class WaveField:
 
     @property
     def active(self) -> bool:
-        """False when no wave is on screen and no wet sand is left."""
-        return (bool(self._waves) and self._presence > 0.01) or float(self._wet.max()) > 0.01
+        """False when no wave is on screen."""
+        return bool(self._waves) and self._presence > 0.01
 
     @property
     def wave_count(self) -> int:
         return len(self._waves)
 
     def reshuffle(self) -> None:
-        """A new song: let the current waves finish; the next ones start fresh."""
+        """A new song: let the current wave finish; the next ones start fresh."""
         self._armed[:] = True
         self._cool[:] = 0
 
@@ -133,8 +135,8 @@ class WaveField:
             "left": np.broadcast_to(x, (grid_h, grid_w)),
             "right": np.broadcast_to(1.0 - x, (grid_h, grid_w)),
         }
-        self._along = {"bottom": x, "top": x, "left": y, "right": y}  # position along the edge, 0..1
-        self._wet = np.zeros((grid_h, grid_w), dtype=np.float32)
+        # position along the edge (0..1): x for the horizontal edges, y for the vertical ones
+        self._along = {"bottom": x, "top": x, "left": y, "right": y}
         self._waves.clear()
 
     # -- analysis ----------------------------------------------------------------
@@ -143,7 +145,8 @@ class WaveField:
         """Per layer: strength of sustained energy (0..1), where in its range the
         strongest sustained pitch sits (0..1), its bin, and its harmonic richness."""
         self._slow = 0.97 * self._slow + 0.03 * band_levels
-        sustained = np.minimum(band_levels, self._slow)  # only what has stayed
+        sustained = np.minimum(band_levels, self._slow)  # only what has stayed: synths, pads, harmonies
+        self._sustained = sustained
         self._peak_ref = max(float(band_levels.max()), self._peak_ref * 0.995)
         loud = min(1.0, self._peak_ref / 0.2)
         amps = np.zeros(self._n, dtype=np.float32)
@@ -168,6 +171,11 @@ class WaveField:
             up = bins[i] + _OCTAVE_BINS
             rich[i] = np.clip(sustained[up] / max(float(sustained[bins[i]]), 1e-6), 0.0, 1.0) if up < self.num_bins else 0.3
         return amps, where, bins, rich
+
+    def _music_profile(self) -> np.ndarray:
+        """The smoothed shape of the sustained mid/high spectrum: the music, seen
+        as a gentle curve, 0..1."""
+        return smooth_profile(self._sustained[self._edges[0]:])
 
     # -- births ------------------------------------------------------------------
 
@@ -197,7 +205,7 @@ class WaveField:
                 self._hold[i] = 0
                 self._interval[i] = int(self._new_interval(1)[0])
                 self._anchor[i] = self._where[i]
-                self._gap = int(self._rng.integers(300, 600) / max(0.25, self.rate))  # surf comes in sets, not a stream
+                self._gap = int(self._rng.integers(420, 800) / max(0.25, self.rate))  # occasional, not a stream
 
     def _spawn(self, amp: float, bin_: int, richness: float, edge: str | None = None) -> Wave:
         r = self._rng
@@ -205,62 +213,55 @@ class WaveField:
         if edge is None:                                     # a different edge than last time
             edge = str(r.choice([e for e in EDGES if e != self._last_edge]))
         self._last_edge = edge
-        k = int(r.integers(4, 7))
         h, w = self.grid_h, self.grid_w
         foam = r.random((h, w)).astype(np.float32)
-        for _ in range(2 if pitch < 0.5 else 1):             # low sounds: coarser bubbles; bright: fine sparkle
+        for _ in range(3 if pitch < 0.5 else 2):             # soft bubbles, coarser for low sounds
             foam = (foam + np.roll(foam, 1, 0) + np.roll(foam, -1, 0) + np.roll(foam, 1, 1) + np.roll(foam, -1, 1)) / 5.0
         foam = (foam - foam.min()) / max(1e-6, float(foam.max() - foam.min()))
         wave = Wave(
             edge=edge,
-            reach=float(np.clip(0.28 + 0.6 * amp, 0.3, 0.9) * r.uniform(0.9, 1.1)),
-            wobble=float(0.05 + 0.11 * richness) * float(r.uniform(0.8, 1.2)),
-            foam_width=float(0.05 - 0.032 * pitch) * float(r.uniform(0.85, 1.2)),
-            amp=float(np.clip(0.6 + 0.5 * amp, 0.0, 1.0)),
-            life=int(r.integers(300, 460) * (0.85 + 0.3 * amp)),
-            freqs=np.sort(r.uniform(0.7, 5.5, k)).astype(np.float32),
-            phases=r.uniform(0, 2 * np.pi, k).astype(np.float32),
-            rates=r.uniform(-0.03, 0.03, k).astype(np.float32),
-            amps=(1.0 / np.arange(1, k + 1) ** 0.7 * r.uniform(0.6, 1.0, k)).astype(np.float32),
-            fingers=[(float(r.random()), float(r.uniform(0.04, 0.1)), float(r.uniform(0.05, 0.14)), float(r.uniform(-0.002, 0.002)))
-                     for _ in range(int(r.integers(0, 3)))],
+            width=float((0.085 - 0.045 * pitch) * r.uniform(0.9, 1.15)),
+            bulge=float(0.26 + 0.1 * richness) * float(r.uniform(0.85, 1.15)),
+            amp=float(np.clip(0.65 + 0.5 * amp, 0.0, 1.0)),
+            life=int(r.integers(380, 560) * (1.25 - 0.4 * amp)),      # louder notes cross faster
+            flip=bool(r.random() < 0.5),
+            profile=self._music_profile(),
             foam=foam,
-            hold=float(r.uniform(0.08, 0.28)),
         )
         self._waves.append(wave)
         return wave
 
     # -- drawing -----------------------------------------------------------------
 
-    def _shoreline(self, wv: Wave, reach_now: float) -> np.ndarray:
-        """Distance inland of the water's edge at each position along the screen edge."""
-        v = self._along[wv.edge]
-        line = np.zeros_like(v, dtype=np.float32)
-        for f, ph, rt, a in zip(wv.freqs, wv.phases, wv.rates, wv.amps):
-            line = line + a * np.sin(2 * np.pi * f * v + ph + rt * wv.age)
-        line = line / max(1e-6, float(wv.amps.sum()))                     # roughly -1..1
-        for c, width, height, drift in wv.fingers:
-            line = line + (height / max(wv.wobble, 1e-3)) * np.exp(-(((v - (c + drift * wv.age)) / width) ** 2))
-        # the ragged part grows with how far up the beach the water is, so the wave
-        # starts as a straight line hugging the whole edge and roughens as it runs in
-        return reach_now * wv.reach + reach_now * wv.wobble * line
+    def _position(self, wv: Wave) -> float:
+        """Progress of the line across the screen: starts outside the source edge,
+        ends outside the far edge. Steady, with the gentlest ease at both ends."""
+        t = wv.age / wv.life
+        e = 0.75 * t + 0.25 * t * t * (3.0 - 2.0 * t)
+        return -_MARGIN + (1.0 + 2.0 * _MARGIN) * e
 
-    def _draw(self, wv: Wave, reach_now: float) -> tuple[np.ndarray, np.ndarray]:
-        d = self._shoreline(wv, reach_now) - self._dist[wv.edge]   # >0 inside the water
-        soft = 0.012 + 0.05 * float(np.clip(self.softness, 0.0, 1.0))
-        dry = np.maximum(d, 0.0)
-        sheet = 0.5 * _smoothstep(-soft * 0.4, soft, d) * (0.4 + 0.6 * np.exp(-dry / 0.2))
-        fw = wv.foam_width
+    def _line(self, wv: Wave) -> tuple[np.ndarray, np.ndarray]:
+        """(centre, thickness) of the line at each position along the screen edge."""
+        v = self._along[wv.edge]
+        n = v.shape[1] if v.shape[0] == 1 else v.shape[0]
+        prof = wv.profile[::-1] if wv.flip else wv.profile
+        p = np.interp(np.linspace(0.0, 1.0, n), np.linspace(0.0, 1.0, len(prof)), prof).astype(np.float32)
+        p = p.reshape(v.shape)
+        centre = self._position(wv) + (p - float(p.mean())) * wv.bulge     # the music pushes the line forward
+        thick = np.sqrt((wv.width * (0.3 + 1.3 * p)) ** 2 + 0.03 ** 2)      # ...and thickens it; never a hair-thin line
+        return centre, thick
+
+    def _draw(self, wv: Wave) -> np.ndarray:
+        centre, thick = self._line(wv)
+        dd = self._dist[wv.edge] - centre                    # distance from the line's centre, across it
+        k = 2.4 * (1.0 - 0.6 * float(np.clip(self.softness, 0.0, 1.0)))   # gaussian falloff: soft edges, never sharp
+        band = np.exp(-((dd / np.maximum(thick, 1e-3)) ** 2) * k)
         tex = np.roll(wv.foam, (int(wv.foam_off), int(wv.foam_off * 0.6)), axis=(0, 1))
-        bubbles = _smoothstep(0.42, 0.58, tex)                                    # some cells bright, some gaps
-        lace = _smoothstep(0.58, 0.72, tex)                                       # sparser, only the brightest specks
-        edge = _smoothstep(-fw * 0.7, 0.0, d) * np.exp(-dry / fw)                 # the bright leading line
-        trail = _smoothstep(0.0, fw * 0.6, d) * np.exp(-dry / (fw * 3.6))         # lacy foam left behind it
-        foam = np.clip(edge * (0.3 + 0.7 * bubbles) + 0.8 * trail * lace, 0.0, 1.0)
-        return sheet, foam
+        bubbles = _smoothstep(0.3, 0.7, tex)                 # a soft bubbly texture, never hard specks
+        return (band * (0.6 + 0.4 * bubbles)).astype(np.float32)
 
     def update(self, band_levels: np.ndarray) -> np.ndarray:
-        """Returns the surf layer, shape (grid_h, grid_w), values 0..1."""
+        """Returns the foam layer, shape (grid_h, grid_w), values 0..1."""
         amps, where, bins, rich = self._analyse(band_levels)
         self._detect_onsets(amps, where, bins, rich)
 
@@ -268,24 +269,19 @@ class WaveField:
         now = float(np.clip(float(band_levels.max()) / 0.06, 0.0, 1.0))
         self._presence += (now - self._presence) * (0.15 if now > self._presence else 0.06)
 
-        self._wet *= 0.985                                    # sand slowly dries
         out = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+        live = self._music_profile()
         for wv in self._waves:
             wv.age += 1
-            wv.foam_off += 0.35
-            t = wv.age / wv.life
-            fade = min(1.0, wv.age / 40.0) * min(1.0, (wv.life - wv.age) / 60.0)
-            alpha = max(0.0, fade) * self._presence * wv.amp * self.strength
+            wv.foam_off += 0.3
+            if float(live.max()) > 0.0:                      # keep listening: the line follows the music as it travels
+                wv.profile += (live - wv.profile) * 0.02
+            alpha = min(1.0, wv.age / 25.0) * min(1.0, (wv.life - wv.age) / 25.0) * self._presence * wv.amp * self.strength
             if alpha < 0.005:
                 continue
-            sheet, foam = self._draw(wv, swash(t, wv.hold))
-            np.maximum(self._wet, np.where(sheet > 0.05, 0.3, 0.0).astype(np.float32) * self._presence, out=self._wet)
-            s_a, f_a = sheet * alpha, foam * min(1.0, alpha * 1.9)                # foam stays crisp even when the water is faint
-            layer = s_a + f_a - s_a * f_a
-            out = out + layer - 2.0 * out * layer             # crossing waves invert each other
+            layer = np.clip(self._draw(wv) * min(1.0, alpha * 2.4), 0.0, 1.0)
+            out = out + layer - 2.0 * out * layer            # crossing lines invert each other
         self._waves = [wv for wv in self._waves if wv.age < wv.life]
-        wet = self._wet * self.strength * 0.5                 # the drying sand is only faintly inverted
-        out = out + wet - 2.0 * out * wet
         return np.clip(out, 0.0, 1.0)
 
 

@@ -86,7 +86,7 @@ def test_each_tab_shows_its_own_controls():
     cfg, panel, _ = opened("look")
     assert {"Draw with", "Bit depth", "3D depth", "Sensitivity", "Fullscreen"} <= set(labels(panel))
     panel.set_tab("layers")
-    assert {"Shapes", "Waves (sea foam)", "Wave strength", "Wave softness", "How often waves come"} <= set(labels(panel))
+    assert {"Shapes", "Foam wave", "Wave strength", "Wave softness", "How often waves come"} <= set(labels(panel))
     panel.set_tab("chars")
     assert {"Character sets", "Pick glyphs", "Character size"} <= set(labels(panel))
 
@@ -119,9 +119,9 @@ def test_closed_panel_consumes_nothing():
 def test_toggle_flips_the_setting_and_reports_it():
     cfg, panel, calls = opened("layers")
     assert cfg.waves
-    click(panel, row(panel, "Waves (sea foam)").rect.center)
+    click(panel, row(panel, "Foam wave").rect.center)
     assert cfg.waves is False and "waves" in calls["changed"]
-    click(panel, row(panel, "Waves (sea foam)").rect.center)
+    click(panel, row(panel, "Foam wave").rect.center)
     assert cfg.waves is True
 
 

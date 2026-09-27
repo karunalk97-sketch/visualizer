@@ -1,7 +1,7 @@
 import numpy as np
 
 from visualizer.spectral_field import resize_bilinear
-from visualizer.waves import EDGES, WaveField, compose, swash
+from visualizer.waves import EDGES, PROFILE_POINTS, WaveField, compose, smooth_profile
 
 BINS = 96
 W, H = 80, 45
@@ -14,6 +14,13 @@ def pad(freq_bin: int, level: float = 0.5) -> np.ndarray:
     return lv
 
 
+def chord(bins=(40, 52, 63), level=0.5) -> np.ndarray:
+    lv = np.zeros(BINS, dtype=np.float32)
+    for b in bins:
+        lv[b - 1:b + 2] = [level * 0.6, level, level * 0.6]
+    return lv
+
+
 def run(field: WaveField, levels: np.ndarray, frames: int) -> np.ndarray:
     out = None
     for _ in range(frames):
@@ -21,8 +28,10 @@ def run(field: WaveField, levels: np.ndarray, frames: int) -> np.ndarray:
     return out
 
 
-def make_wave(edge="bottom", amp=0.8, bin_=60, rich=0.6, seed=1, **kw):
+def make_wave(edge="bottom", amp=0.8, bin_=60, rich=0.6, seed=1, sustained=None, **kw):
     f = WaveField(BINS, 160, 90, seed=seed, **kw)
+    if sustained is not None:
+        f._sustained = sustained.astype(np.float32)
     wave = f._spawn(amp, bin_, rich, edge=edge)
     f._waves.clear()
     return f, wave
@@ -30,8 +39,8 @@ def make_wave(edge="bottom", amp=0.8, bin_=60, rich=0.6, seed=1, **kw):
 
 def at(f, wave, t):
     wave.age = int(t * wave.life)
-    wave.foam_off = wave.age * 0.35
-    return f._draw(wave, swash(t, wave.hold))
+    wave.foam_off = wave.age * 0.3
+    return f._draw(wave)
 
 
 # -- births -----------------------------------------------------------------------
@@ -54,16 +63,16 @@ def test_a_new_synth_note_brings_in_a_wave():
 
 def test_waves_come_and_go_rather_than_being_constant():
     field = WaveField(BINS, W, H, seed=4)
-    cov = np.array([(field.update(pad(60)) > 0.1).mean() for _ in range(2400)])
-    assert (cov > 0.02).mean() < 0.9       # there are stretches with no surf
-    assert (cov > 0.02).mean() > 0.2       # but it definitely comes in
+    cov = np.array([(field.update(pad(60)) > 0.1).mean() for _ in range(3000)])
+    assert (cov > 0.01).mean() < 0.9       # there are stretches with no wave
+    assert (cov > 0.01).mean() > 0.2       # but it definitely comes in
     assert field.wave_count <= 2
 
 
-def test_silence_fades_everything_out_including_the_wet_sand():
+def test_silence_fades_everything_out_and_leaves_nothing_behind():
     field = WaveField(BINS, W, H, seed=1)
     run(field, pad(60), 250)
-    out = run(field, np.zeros(BINS, dtype=np.float32), 900)
+    out = run(field, np.zeros(BINS, dtype=np.float32), 200)
     assert out.max() < 0.02
     assert not field.active
 
@@ -86,7 +95,7 @@ def test_rate_setting_changes_how_often_waves_are_born():
     def births(rate):
         f = WaveField(BINS, W, H, seed=11, rate=rate)
         total = 0
-        for _ in range(3000):
+        for _ in range(4000):
             before = len(f._waves)
             f.update(pad(60))
             total += max(0, len(f._waves) - before)
@@ -94,7 +103,7 @@ def test_rate_setting_changes_how_often_waves_are_born():
     assert births(2.0) > births(0.5)
 
 
-def test_reshuffle_lets_waves_finish_and_rearms():
+def test_reshuffle_lets_the_wave_finish_and_rearms():
     field = WaveField(BINS, W, H, seed=1)
     run(field, pad(60), 200)
     n = field.wave_count
@@ -103,116 +112,164 @@ def test_reshuffle_lets_waves_finish_and_rearms():
     assert field._armed.all()
 
 
-# -- the surf itself --------------------------------------------------------------
+# -- it is one line, not a wash ---------------------------------------------------
 
-def test_swash_runs_up_pauses_and_pulls_back():
-    hold = 0.2
-    xs = np.linspace(0, 1, 201)
-    r = np.array([swash(t, hold) for t in xs])
-    assert r[0] == 0.0 and r[-1] == 0.0                    # starts and ends at the shore
-    assert r.min() >= 0.0 and r.max() <= 1.0
-    peak = int(np.argmax(r))
-    assert np.all(np.diff(r[:peak + 1]) >= -1e-9)          # up
-    assert np.all(np.diff(r[peak + int(0.3 * 200):]) <= 1e-9)   # then back
-    assert (r > 0.999).sum() >= 0.15 * 200                 # a real pause at the top
-    up = next(t for t, v in zip(xs, r) if v > 0.9)
-    down = next(t for t, v in zip(xs[::-1], r[::-1]) if v > 0.9)
-    assert up < 1 - down                                    # the uprush is quicker than the backwash
-
-
-def test_every_wave_spans_the_whole_edge_from_every_direction():
+def test_the_wave_is_a_single_thin_line_never_a_wash_of_the_screen():
     for edge in EDGES:
-        f, wave = make_wave(edge)
-        for t in (0.03, 0.15, 0.3, 0.6, 0.85):
-            sheet, foam = at(f, wave, t)
-            layer = np.maximum(sheet, foam)
-            axis = 0 if edge in ("bottom", "top") else 1        # collapse the depth axis: one value per position along the edge
+        f, wave = make_wave(edge, sustained=np.linspace(0.1, 0.5, BINS))
+        for t in (0.15, 0.3, 0.5, 0.7, 0.85):
+            layer = at(f, wave, t)
+            assert (layer > 0.05).mean() < 0.35, (edge, t)        # a band, not the whole screen
+            assert layer.max() > 0.3 or t in (0.15, 0.85)          # and it is clearly there mid-crossing
+
+
+def test_nothing_follows_the_line_no_sheet_no_wet_sand():
+    f, wave = make_wave("bottom", sustained=np.linspace(0.1, 0.5, BINS))
+    layer = at(f, wave, 0.55)
+    centre, thick = f._line(wave)
+    dist = f._dist["bottom"]
+    behind = (dist - centre) > 2.5 * thick.max()                   # the region the line has already passed
+    ahead = (dist - centre) < -2.5 * thick.max()
+    assert behind.any() and ahead.any()
+    assert layer[behind].max() < 0.02 and layer[ahead].max() < 0.02
+    assert not hasattr(f, "_wet")
+
+
+def test_the_frame_is_empty_again_as_soon_as_the_wave_has_left():
+    field = WaveField(BINS, W, H, seed=1)
+    run(field, pad(60), 200)
+    silence = np.zeros(BINS, dtype=np.float32)
+    for _ in range(700):
+        out = field.update(silence)
+    assert field.wave_count == 0 and out.max() == 0.0
+
+
+def test_the_line_spans_the_whole_edge_from_every_direction():
+    for edge in EDGES:
+        f, wave = make_wave(edge, sustained=np.linspace(0.1, 0.5, BINS))
+        for t in (0.42, 0.5, 0.58):                                # while it is crossing the middle of the screen
+            layer = at(f, wave, t)
+            axis = 0 if edge in ("bottom", "top") else 1           # collapse the depth axis: one value per position along the edge
             assert (layer.max(axis=axis) > 0.05).all(), (edge, t)
 
 
-def test_the_wave_starts_as_a_line_hugging_the_edge():
-    f, wave = make_wave("bottom")
-    sheet, foam = at(f, wave, 0.005)
-    rows = np.nonzero((foam > 0.05).any(axis=1))[0]
-    assert rows.min() >= f.grid_h - 10                        # only the bottom ~10% of the screen
+def test_it_rolls_across_the_screen_once_from_one_edge_to_the_other():
+    f, wave = make_wave("bottom", sustained=np.linspace(0.1, 0.5, BINS))
+    pos = []
+    for t in np.linspace(0.0, 1.0, 21):
+        wave.age = int(t * wave.life)
+        pos.append(f._position(wave))
+    pos = np.array(pos)
+    assert pos[0] < 0.0 and pos[-1] > 1.0                          # starts outside the source edge, ends beyond the far one
+    assert np.all(np.diff(pos) > 0)                                # always moving the same way: no roll back out
+    assert at(f, wave, 0.0).max() < 0.1 and at(f, wave, 0.999).max() < 0.1   # off-screen at both ends
 
 
-def test_the_shoreline_is_irregular_and_never_repeats():
-    f1, w1 = make_wave("bottom", seed=1)
-    f2, w2 = make_wave("bottom", seed=2)
-    a, b = f1._shoreline(w1, 1.0), f2._shoreline(w2, 1.0)
-    assert not np.allclose(a, b)                              # two waves differ
-    assert np.std(a) > 0.01                                   # and neither is a straight line
-    before = f1._shoreline(w1, 1.0).copy()
-    w1.age += 60
-    assert not np.allclose(before, f1._shoreline(w1, 1.0))    # the shoreline keeps shifting as the wave moves
-
-
-def test_a_random_edge_each_wave_and_never_the_same_twice_in_a_row():
+def test_each_wave_comes_from_a_random_edge_never_the_same_twice_in_a_row():
     f = WaveField(BINS, W, H, seed=3)
     edges = [f._spawn(0.8, 60, 0.5).edge for _ in range(60)]
     assert set(edges) == set(EDGES)
     assert all(a != b for a, b in zip(edges, edges[1:]))
 
 
-def test_louder_notes_run_further_up_the_beach():
+# -- shaped by the music ----------------------------------------------------------
+
+def test_the_line_bulges_and_thickens_where_the_music_is_strong_and_thins_where_it_is_weak():
+    sustained = np.zeros(BINS, dtype=np.float32)
+    sustained[70:82] = 0.6                                          # a strong sustained band high in the range
+    sustained[28:96] += 0.03
+    f, wave = make_wave("bottom", sustained=sustained, seed=2)
+    wave.flip = False
+    wave.age = int(0.5 * wave.life)
+    centre, thick = f._line(wave)
+    centre, thick = centre.ravel(), thick.ravel()
+    strong = int(len(thick) * ((76 - 28) / (96 - 28)))              # where bins 70-82 sit along the line
+    weak = int(len(thick) * 0.08)
+    assert thick[strong] > 1.8 * thick[weak]                        # thicker where the sustained energy is
+    assert centre[strong] > centre[weak] + 0.05                     # and pushed further forward
+
+
+def test_different_music_gives_a_different_line():
+    a = np.zeros(BINS, dtype=np.float32); a[35:45] = 0.5
+    b = np.zeros(BINS, dtype=np.float32); b[80:90] = 0.5
+    fa, wa = make_wave("bottom", sustained=a, seed=4)
+    fb, wb = make_wave("bottom", sustained=b, seed=4)
+    ca, _ = fa._line(wa)
+    cb, _ = fb._line(wb)
+    assert not np.allclose(wa.profile, wb.profile)
+    assert np.abs(ca - cb).max() > 0.05
+
+
+def test_the_line_keeps_listening_as_it_travels():
+    field = WaveField(BINS, W, H, seed=6)
+    run(field, chord((36, 48, 60)), 200)
+    wave = field._waves[0]
+    before = wave.profile.copy()
+    run(field, chord((70, 82, 90)), 60)
+    assert field._waves and not np.allclose(before, field._waves[0].profile, atol=1e-3)
+
+
+def test_louder_notes_cross_faster():
     f = WaveField(BINS, W, H, seed=5)
-    quiet = np.mean([f._spawn(0.35, 60, 0.5).reach for _ in range(30)])
-    loud = np.mean([f._spawn(0.95, 60, 0.5).reach for _ in range(30)])
-    assert loud > quiet + 0.15
+    quiet = np.mean([f._spawn(0.35, 60, 0.5).life for _ in range(40)])
+    loud = np.mean([f._spawn(0.95, 60, 0.5).life for _ in range(40)])
+    assert loud < 0.85 * quiet
 
 
-def test_low_sounds_make_wide_foam_and_bright_sounds_a_fine_line():
+def test_low_sounds_make_a_thicker_line_than_bright_sounds():
     f = WaveField(BINS, W, H, seed=6)
-    low = np.mean([f._spawn(0.8, 34, 0.5).foam_width for _ in range(30)])
-    high = np.mean([f._spawn(0.8, 90, 0.5).foam_width for _ in range(30)])
-    assert low > 1.6 * high
+    low = np.mean([f._spawn(0.8, 34, 0.5).width for _ in range(30)])
+    high = np.mean([f._spawn(0.8, 90, 0.5).width for _ in range(30)])
+    assert low > 1.4 * high
 
 
-def test_rich_harmonic_sound_makes_a_more_ragged_shoreline():
-    f = WaveField(BINS, W, H, seed=7)
-    plain = np.mean([f._spawn(0.8, 60, 0.05).wobble for _ in range(30)])
-    rich = np.mean([f._spawn(0.8, 60, 0.95).wobble for _ in range(30)])
-    assert rich > 1.5 * plain
+def test_only_the_sustained_tonal_energy_shapes_it():
+    """Drum-like bursts (not sustained) leave the profile flat; a held chord does not."""
+    field = WaveField(BINS, W, H, seed=7)
+    for n in range(120):
+        field._analyse(np.full(BINS, 0.6, dtype=np.float32) if n % 30 == 0 else np.zeros(BINS, dtype=np.float32))
+    assert field._sustained.max() < 0.1
+    field2 = WaveField(BINS, W, H, seed=7)
+    for _ in range(120):
+        field2._analyse(chord())
+    assert field2._sustained.max() > 0.3
 
 
-def test_foam_is_brightest_at_the_leading_edge_and_water_thins_behind():
-    f, wave = make_wave("bottom", seed=3)
-    sheet, foam = at(f, wave, 0.4)
-    front_rows = np.nonzero((foam > 0.3).any(axis=1))[0]
-    assert len(front_rows)                                    # there is a bright foam line
-    deep = foam[int(f.grid_h * 0.97):]                        # right at the shore side, well behind the front
-    line = foam[front_rows.min():front_rows.min() + 6]
-    assert line.mean() > 3 * deep.mean()
-    top, bottom = sheet[int(0.55 * f.grid_h)], sheet[-2]
-    assert sheet.max() <= 0.51 and bottom.mean() > 0           # the sheet is a partial inversion, not full
+# -- smoothness ---------------------------------------------------------------------
+
+def test_the_profile_is_a_smooth_curve_not_jagged():
+    rng = np.random.default_rng(3)
+    spiky = rng.random(BINS).astype(np.float32)                      # about as jagged as a spectrum gets
+    p = smooth_profile(spiky)
+    assert p.shape == (PROFILE_POINTS,) and p.min() >= 0.0 and p.max() <= 1.0 + 1e-6
+    raw = np.interp(np.linspace(0, BINS - 1, PROFILE_POINTS), np.arange(BINS), spiky)
+    assert np.abs(np.diff(p, 2)).max() < 0.35 * np.abs(np.diff(raw / raw.max(), 2)).max()   # far gentler curvature
 
 
-def test_the_waterline_is_soft_not_sharp():
-    f, wave = make_wave("bottom", seed=4, softness=0.6)
-    sheet, _ = at(f, wave, 0.4)
-    assert np.abs(np.diff(sheet, axis=0)).max() < 0.2         # a gradual edge, never a hard step
-    soft = WaveField(BINS, 160, 90, seed=4, softness=1.0)
-    hard = WaveField(BINS, 160, 90, seed=4, softness=0.0)
-    ws, wh = soft._spawn(0.8, 60, 0.5, edge="bottom"), hard._spawn(0.8, 60, 0.5, edge="bottom")
-    soft._waves.clear(); hard._waves.clear()
-    s_soft, _ = at(soft, ws, 0.4)
-    s_hard, _ = at(hard, wh, 0.4)
-    assert (np.abs(np.diff(s_soft, axis=0)).max()) < np.abs(np.diff(s_hard, axis=0)).max()
+def test_the_centre_line_and_edges_are_smooth_and_soft():
+    f, wave = make_wave("bottom", sustained=np.random.default_rng(1).random(BINS), seed=3)
+    centre, thick = f._line(wave)
+    assert np.abs(np.diff(centre.ravel(), 2)).max() < 0.02          # no kinks in the curve
+    assert np.abs(np.diff(thick.ravel(), 2)).max() < 0.02
+    layer = at(f, wave, 0.5)
+    assert np.abs(np.diff(layer, axis=0)).max() < 0.6                # gradual across the line, never a hard step (1.0)
 
 
-def test_the_sand_stays_faintly_wet_then_dries():
-    field = WaveField(BINS, W, H, seed=1)
-    run(field, pad(60), 400)
-    wet_now = float(field._wet.max())
-    assert wet_now > 0.05
-    run(field, np.zeros(BINS, dtype=np.float32), 60)
-    assert 0.0 < float(field._wet.max()) < wet_now * 1.01
-    run(field, np.zeros(BINS, dtype=np.float32), 800)
-    assert float(field._wet.max()) < 0.01
+def test_softness_setting_feathers_the_edges():
+    def steepest(softness):
+        f, w = make_wave("bottom", sustained=np.linspace(0.1, 0.5, BINS), softness=softness)
+        return float(np.abs(np.diff(at(f, w, 0.5), axis=0)).max())
+    assert steepest(1.0) < steepest(0.0)
 
 
-def test_crossing_waves_and_layers_invert():
+def test_silence_gives_a_neutral_profile_not_an_error():
+    assert np.allclose(smooth_profile(np.zeros(BINS, dtype=np.float32)), 0.0)
+    assert np.allclose(smooth_profile(np.full(BINS, 0.3, dtype=np.float32)), 0.5)
+
+
+# -- composing ----------------------------------------------------------------------
+
+def test_crossing_lines_and_layers_invert():
     base = np.array([[1.0, 0.0, 0.3, 0.5]], dtype=np.float32)
     full = np.ones_like(base)
     assert np.allclose(compose(base, full), [[0.0, 1.0, 0.7, 0.5]])   # white -> black, black -> white, gray flips

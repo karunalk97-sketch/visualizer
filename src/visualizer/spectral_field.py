@@ -10,9 +10,9 @@ as a kick is. Bass gets few, large shapes (grouped, so one kick is a handful of
 big shapes rather than dozens); treble gets many small ones. A per-frame area
 budget stops any single hit from lighting the whole screen.
 
-Spots come in six shapes -- round blobs, spiky stars, rounded petal flowers,
-rings, and (rarely) long strings and stretched hybrids -- each with its own angle
-and slow spin. Within a frame, overlapping shapes XOR: they invert each other
+Spots come in five shapes -- a smooth orb, a spiky orb, a long-spiked star, an
+ambiguous lumpy blob, and (a small share) a long thin slash -- each with its own
+angle, spinning steadily. Within a frame, overlapping shapes XOR: they invert each other
 instead of just getting brighter.
 
 To keep it alive rather than static:
@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import numpy as np
 
-BLOB, STAR, STRING, HYBRID, PETAL, RING = range(6)
-_KIND_P = [0.20, 0.24, 0.07, 0.09, 0.22, 0.18]   # long strings read as slashes: keep them rare
+ORB, SPIKY, STAR, BLOB, SLASH = range(5)
+_KIND_P = [0.22, 0.24, 0.26, 0.18, 0.10]   # slashes are the long thin ones: keep them a small share
 _BASS_FRAC = 0.22        # lowest ~22% of the (log) frequency axis: kicks, sub, bass
 _MID_FRAC = 0.50
 
@@ -104,31 +104,21 @@ class SpectralField:
         self._size_scale = (1.6 - 0.85 * self._frac[owner]).astype(np.float32)
 
     def _new_shapes(self) -> None:
-        """Give every spot its own shape and slow spin."""
+        """Give every spot its own shape and a steady spin (they all visibly rotate)."""
         rng, n = self._rng, self._spots
-        kind = rng.choice(6, size=n, p=_KIND_P)
+        kind = rng.choice(5, size=n, p=_KIND_P)
         self._kind = kind
         u = lambda lo, hi: rng.uniform(lo, hi, n)  # noqa: E731
-        self._elong = np.select(
-            [kind == BLOB, kind == STAR, kind == STRING, kind == HYBRID, kind == PETAL],
-            [u(1.0, 1.25), u(1.0, 1.3), u(2.0, 3.4), u(1.4, 2.1), u(1.0, 1.2)],
-            u(1.0, 1.15),
-        ).astype(np.float32)
+        conds = [kind == ORB, kind == SPIKY, kind == STAR, kind == BLOB]
+        self._elong = np.select(conds, [u(1.0, 1.1), u(1.0, 1.1), u(1.0, 1.25), u(1.0, 1.3)], u(2.0, 3.2)).astype(np.float32)
         self._spikes = np.select(
-            [kind == BLOB, kind == STAR, kind == STRING, kind == HYBRID, kind == PETAL],
-            [np.zeros(n), rng.integers(5, 11, n), rng.integers(0, 3, n), rng.integers(3, 7, n), rng.integers(4, 9, n)],
-            np.zeros(n),
+            conds, [np.zeros(n), rng.integers(11, 19, n), rng.integers(5, 10, n), rng.integers(2, 4, n)], rng.integers(0, 3, n),
         ).astype(np.int32)
-        self._depth = np.select(
-            [kind == BLOB, kind == STAR, kind == STRING, kind == HYBRID, kind == PETAL],
-            [np.zeros(n), u(1.3, 2.4), u(0.2, 0.5), u(0.8, 1.5), u(0.5, 0.95)],
-            np.zeros(n),
-        ).astype(np.float32)
-        # sharpness of the spikes: stars are sharp, petals are rounded
-        self._expo = np.where(kind == PETAL, 1.0, 3.0).astype(np.float32)
+        self._depth = np.select(conds, [np.zeros(n), u(0.35, 0.6), u(1.3, 2.4), u(0.25, 0.55)], u(0.2, 0.5)).astype(np.float32)
+        # sharpness of the spikes: a blob's lobes are smooth (cos^2, no cusps); spikes are sharp
+        self._expo = np.where(kind == BLOB, 2.0, 3.0).astype(np.float32)
         self._angle = rng.uniform(0, np.pi, n).astype(np.float32)
-        self._spin = rng.uniform(-0.012, 0.012, n).astype(np.float32)
-
+        self._spin = (rng.choice([-1.0, 1.0], n) * u(0.008, 0.026)).astype(np.float32)   # 0.5-1.5 rad/s, either way
     def reshuffle(self) -> None:
         """Draw a brand new random layout; spots glide there over ~a second."""
         self._target = _scatter(self._rng, self._spots)
@@ -164,8 +154,7 @@ class SpectralField:
             radii = unit * self.size * self._size_scale[active] * (0.8 + 1.5 * levels[active])
             # rough area each shape will claim, then keep the strongest that fit the budget
             area = (np.pi * radii ** 2 * np.sqrt(self._elong[active])
-                    * (1.0 + 0.35 * self._depth[active])
-                    * np.where(self._kind[active] == RING, 0.55, 1.0))
+                    * (1.0 + 0.35 * self._depth[active]))
             keep = np.cumsum(area) <= self.area_budget * self.cluster_w * self.cluster_h
             keep[0] = True                                            # one always gets through
             keep[self.max_active:] = False
@@ -207,8 +196,6 @@ class SpectralField:
         elong = float(self._elong[i])
         kind = int(self._kind[i])
         depth = float(self._depth[i]) * (0.6 + 0.8 * level)  # louder -> spikier
-        if kind == RING:
-            radius *= 1.25
         reach = min(radius * elong * (1.0 + depth), 0.45 * max(self.cluster_w, self.cluster_h))
         x0, x1 = max(0, int(cx - reach)), min(self.cluster_w, int(cx + reach) + 1)
         y0, y1 = max(0, int(cy - reach)), min(self.cluster_h, int(cy + reach) + 1)
@@ -222,18 +209,14 @@ class SpectralField:
         v = dy * np.cos(ang) - dx * np.sin(ang)   # across it
         rho = np.sqrt((u / elong) ** 2 + (v * np.sqrt(elong)) ** 2) / max(radius, 1e-3)
 
-        if kind == RING:
-            amp = np.exp(-(((rho - 0.62) / 0.24) ** 2)) * min(1.0, level * 1.3)   # hollow: a soft band
+        spikes = int(self._spikes[i])
+        if spikes:
+            phi = np.arctan2(v, u)
+            edge = 1.0 + depth * np.abs(np.cos(spikes * phi / 2.0)) ** float(self._expo[i])
         else:
-            spikes = int(self._spikes[i])
-            if spikes:
-                phi = np.arctan2(v, u)
-                edge = 1.0 + depth * np.abs(np.cos(spikes * phi / 2.0)) ** float(self._expo[i])
-            else:
-                edge = 1.0 + depth
-            # solid core with a soft rim, so overlaps read as a clear negative
-            amp = np.clip((1.0 - rho / edge) * 1.8, 0.0, 1.0) * min(1.0, level * 1.3)
-
+            edge = 1.0 + depth
+        # solid core with a soft rim, so overlaps read as a clear negative
+        amp = np.clip((1.0 - rho / edge) * 1.8, 0.0, 1.0) * min(1.0, level * 1.3)
         sub = layer[y0:y1, x0:x1]
         layer[y0:y1, x0:x1] = sub + amp - 2.0 * self.invert * sub * amp
 

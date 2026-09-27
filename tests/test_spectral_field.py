@@ -1,7 +1,8 @@
 import numpy as np
 
 from visualizer.analyzer import SpectrumAnalyzer
-from visualizer.spectral_field import BLOB, HYBRID, PETAL, RING, STAR, STRING, SpectralField, resize_nearest
+import visualizer.spectral_field as spectral_field_module
+from visualizer.spectral_field import BLOB, ORB, SLASH, SPIKY, STAR, SpectralField, resize_nearest
 
 SR = 48000
 BINS = 96
@@ -99,45 +100,67 @@ def test_resize_nearest_shape_and_content():
 
 # -- shapes ---------------------------------------------------------------------
 
-def test_all_six_shape_kinds_appear_and_vary():
+def test_the_five_shape_kinds_appear_and_vary():
     field = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=9)
-    assert set(field._kind.tolist()) == {BLOB, STAR, STRING, HYBRID, PETAL, RING}
-    assert field._elong.max() > 2.0 and field._elong.min() < 1.4
-    assert field._spikes.max() >= 5 and field._spikes.min() == 0
+    assert set(field._kind.tolist()) == {ORB, SPIKY, STAR, BLOB, SLASH}
+    assert field._elong.max() > 2.0 and field._elong.min() < 1.15
     assert len(set(np.round(field._angle, 2).tolist())) > 50       # pointing every which way
 
 
-def test_long_thin_slashes_are_rare():
-    """Long strings and stretched hybrids read as slashes: they must not dominate."""
+def test_rings_and_petals_are_gone():
+    for name in ("RING", "PETAL", "HYBRID", "STRING"):
+        assert not hasattr(spectral_field_module, name), name
+    field = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=2)
+    assert field._kind.max() <= 4                                   # only the five kinds exist
+
+
+def test_each_kind_looks_like_what_it_is():
+    f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=5)
+    k = f._kind
+    assert np.all(f._spikes[k == ORB] == 0) and np.all(f._depth[k == ORB] == 0) and f._elong[k == ORB].max() <= 1.11   # a smooth round orb
+    assert f._spikes[k == SPIKY].min() >= 11 and f._depth[k == SPIKY].max() <= 0.6                                     # many short spikes on a round core
+    assert 5 <= f._spikes[k == STAR].min() and f._spikes[k == STAR].max() <= 9 and f._depth[k == STAR].min() >= 1.3      # few long spikes
+    assert f._spikes[k == BLOB].max() <= 3 and np.all(f._expo[k == BLOB] == 2.0)                                      # lumpy, smooth lobes (no cusps)
+    assert f._elong[k == SLASH].min() >= 2.0                                                                           # only slashes are long and thin
+    assert f._elong[k != SLASH].max() <= 1.31
+
+
+def test_slashes_are_a_small_share():
     fractions = []
     for seed in range(8):
         f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=seed)
-        fractions.append(float(np.mean(np.isin(f._kind, [STRING, HYBRID]))))
-        assert np.mean(f._elong > 2.0) < 0.15
-    assert np.mean(fractions) < 0.22
-    for kind in (BLOB, STAR, PETAL, RING):          # and the round/flowery kinds carry the picture
-        f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=1)
-        assert np.mean(f._kind == kind) > 0.1
+        fractions.append(float(np.mean(f._kind == SLASH)))
+        assert np.mean(f._elong > 2.0) < 0.18
+    assert 0.03 < np.mean(fractions) < 0.15
+    f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=1)
+    for kind in (ORB, SPIKY, STAR, BLOB):                           # the orbs, stars and blobs carry the picture
+        assert np.mean(f._kind == kind) > 0.12
 
 
-def test_rings_are_hollow_and_petals_are_rounded():
-    def render(kind):
-        f = SpectralField(num_bins=8, cluster_w=60, cluster_h=60, persistence=0.0, spots_per_bin=1, seed=1)
-        f._kind[:] = kind
-        f._elong[:] = 1.0
-        f._angle[:] = 0.0
-        f._spin[:] = 0.0
-        f._spikes[:] = 6 if kind == PETAL else 0
-        f._depth[:] = 0.7 if kind == PETAL else 0.0
-        f._expo[:] = 1.0
-        layer = np.zeros((60, 60), dtype=np.float32)
-        f._splat(layer, 0, 30.0, 30.0, 12.0, 1.0)
+def test_every_shape_rotates_steadily_in_either_direction():
+    f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=3)
+    assert np.abs(f._spin).min() >= 0.008                           # none is (nearly) still: at least ~0.5 rad/s
+    assert (f._spin > 0).any() and (f._spin < 0).any()              # clockwise and counter-clockwise
+    def render(frame):
+        f._frame = frame
+        layer = np.zeros((60, 100), dtype=np.float32)
+        i = int(np.where(f._kind == STAR)[0][0])
+        f._angle[i], f._spin[i] = 0.3, 0.02
+        f._splat(layer, i, 50.0, 30.0, 12.0, 1.0)
         return layer
-    ring = render(RING)
-    assert ring[30, 30] < 0.2 and ring.max() > 0.8          # dark middle, bright band
-    petal = render(PETAL)
-    assert petal[30, 30] > 0.8 and petal.sum() > 0
+    a, b = render(0), render(40)
+    assert not np.allclose(a, b, atol=0.02)                         # a star at two moments is visibly turned
 
+
+def test_blobs_are_lumpy_but_smooth():
+    f = SpectralField(num_bins=8, cluster_w=80, cluster_h=80, persistence=0.0, spots_per_bin=1, seed=1)
+    i = 0
+    f._kind[:] = BLOB; f._elong[:] = 1.2; f._spikes[:] = 3; f._depth[:] = 0.5; f._expo[:] = 2.0
+    f._angle[:] = 0.0; f._spin[:] = 0.0
+    layer = np.zeros((80, 80), dtype=np.float32)
+    f._splat(layer, i, 40.0, 40.0, 16.0, 1.0)
+    assert layer[40, 40] > 0.9 and layer.sum() > 0
+    assert np.abs(np.diff(layer, axis=1)).max() < 0.35              # soft edge all round: no hard steps or cusps
 
 def test_reshuffle_draws_new_shapes():
     field = SpectralField(num_bins=32, cluster_w=80, cluster_h=50, seed=1)

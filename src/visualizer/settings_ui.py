@@ -110,7 +110,7 @@ class SettingsPanel:
 
             Ctl("toggle", "Shapes", "layers", lambda: c.show_shapes, s("show_shapes")),
             Ctl("slider", "Overlap inversion", "layers", lambda: c.overlap_invert, s("overlap_invert"), lo=0.0, hi=1.0),
-            Ctl("toggle", "Waves (sea foam)", "layers", lambda: c.waves, s("waves")),
+            Ctl("toggle", "Foam wave", "layers", lambda: c.waves, s("waves")),
             Ctl("slider", "Wave strength", "layers", lambda: c.wave_strength, s("wave_strength"), lo=0.1, hi=1.0),
             Ctl("slider", "Wave softness", "layers", lambda: c.wave_softness, s("wave_softness"), lo=0.0, hi=1.0),
             Ctl("slider", "How often waves come", "layers", lambda: c.wave_rate, s("wave_rate"), lo=0.25, hi=3.0, fmt="{:.1f}x"),
