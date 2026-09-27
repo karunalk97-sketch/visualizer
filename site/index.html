@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1-bit Audio Visualizer</title>
+<meta name="description" content="A black and white, 1-bit visualizer for whatever is playing on your computer. Free for Windows and Mac.">
+<meta property="og:title" content="1-bit Audio Visualizer">
+<meta property="og:description" content="Black and white pictures of whatever is playing on your computer. Free for Windows and Mac.">
+<meta property="og:image" content="/media/default.jpg">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Crect width='8' height='8' fill='%23000'/%3E%3Cpath fill='%23fff' d='M1 5h1v2H1zM3 2h1v5H3zM5 3h1v4H5z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000; --fg: #fff; --dim: #9a9a9a; --line: #2a2a2a; --panel: #0b0b0b;
+    --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 var(--mono); }
+  a { color: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  header.top { display: flex; justify-content: space-between; align-items: center; padding: 18px 0; font-size: 13px; }
+  header.top nav a { margin-left: 18px; color: var(--dim); text-decoration: none; }
+  header.top nav a:hover { color: var(--fg); }
+  .logo { font-weight: 700; letter-spacing: .04em; text-decoration: none; }
+
+  .hero { position: relative; border: 1px solid var(--line); aspect-ratio: 16 / 9; overflow: hidden; background: #000; }
+  .hero video { width: 100%; height: 100%; object-fit: cover; display: block; image-rendering: pixelated; }
+  .intro { display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; padding: 40px 0 16px; align-items: end; }
+  h1 { font-size: clamp(30px, 5vw, 54px); line-height: 1.05; margin: 0 0 16px; letter-spacing: -.02em; }
+  .lede { color: var(--dim); margin: 0; max-width: 34em; }
+  .lede b { color: var(--fg); font-weight: 400; }
+
+  .dl { display: grid; gap: 10px; }
+  .btn { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px;
+         border: 1px solid var(--fg); text-decoration: none; font-weight: 700; transition: background .12s, color .12s; }
+  .btn small { font-weight: 400; color: var(--dim); }
+  .btn:hover, .btn.primary { background: var(--fg); color: var(--bg); }
+  .btn:hover small, .btn.primary small { color: #555; }
+  .btn.primary:hover { background: #d8d8d8; }
+  .dl .note { font-size: 12px; color: var(--dim); margin: 2px 0 0; }
+
+  section { padding: 56px 0 0; }
+  h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); font-weight: 400; margin: 0 0 18px;
+       padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  figure { margin: 0; }
+  figure video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; border: 1px solid var(--line); background: #000; }
+  figcaption { font-size: 13px; padding: 8px 2px 0; }
+  figcaption span { display: block; color: var(--dim); font-size: 12px; }
+
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .features div { background: var(--bg); padding: 20px; }
+  .features h3 { margin: 0 0 6px; font-size: 14px; }
+  .features p { margin: 0; color: var(--dim); font-size: 13px; }
+
+  .install { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { border: 1px solid var(--line); background: var(--panel); padding: 22px; }
+  .card h3 { margin: 0 0 4px; font-size: 16px; }
+  .card .sub { color: var(--dim); font-size: 12px; margin: 0 0 14px; }
+  .card ol { margin: 0; padding-left: 20px; }
+  .card li { margin: 0 0 10px; font-size: 13.5px; }
+  .card li::marker { color: var(--dim); }
+  .card .btn { margin: 18px 0 0; }
+  details { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 13px; }
+  summary { cursor: pointer; color: var(--dim); }
+  summary:hover { color: var(--fg); }
+  details p, details ol { color: var(--dim); }
+  code, kbd { font-family: var(--mono); font-size: 12.5px; background: #1a1a1a; border: 1px solid #2c2c2c; padding: 1px 5px; }
+  pre { background: #0f0f0f; border: 1px solid var(--line); padding: 12px 14px; overflow-x: auto; font-size: 12.5px; margin: 10px 0 0; }
+
+  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px 24px; font-size: 13px; }
+  .keys div { display: flex; gap: 12px; align-items: baseline; }
+  .keys kbd { min-width: 64px; text-align: center; }
+  .keys span { color: var(--dim); }
+
+  footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px;
+           display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 860px) {
+    .intro { grid-template-columns: 1fr; gap: 24px; }
+    .grid, .features { grid-template-columns: 1fr 1fr; }
+    .install { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    .grid, .features { grid-template-columns: 1fr; }
+    header.top nav a:not(:last-child) { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="logo" href="#">▮▯ visualizer</a>
+    <nav>
+      <a href="#examples">Examples</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/karunalk97-sketch/visualizer">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <video src="media/default.mp4" poster="media/default.jpg" autoplay muted loop playsinline></video>
+  </div>
+
+  <div class="intro">
+    <div>
+      <h1>Black &amp; white pictures of whatever is playing.</h1>
+      <p class="lede">A 1-bit audio visualizer for your desktop. It listens to Spotify, YouTube, a game,
+        anything, and draws the music as it happens. <b>Bass, vocals and hats each get their own shape</b>,
+        quiet songs stay sparse, loud ones fill the screen, and every song gets a new layout.</p>
+    </div>
+    <div class="dl" id="download">
+      <a class="btn" id="dl-win" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-windows.exe">
+        Download for Windows <small>.exe · Windows 10/11</small></a>
+      <a class="btn" id="dl-mac" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-mac.zip">
+        Download for Mac <small>.zip · Apple silicon</small></a>
+      <p class="note">Free and open source. No account, nothing to sign up for. <a href="#install">How to run it ↓</a></p>
+    </div>
+  </div>
+
+  <section id="examples">
+    <h2>Examples, drawn from real music</h2>
+    <div class="grid">
+      <figure><video data-src="media/spots.mp4" poster="media/spots.jpg" muted loop playsinline></video>
+        <figcaption>V1 Spots<span>Every frequency is a spot of light that glows and drifts.</span></figcaption></figure>
+      <figure><video data-src="media/field.mp4" poster="media/field.jpg" muted loop playsinline></video>
+        <figcaption>V7 Field<span>Ink for bass, orbs, rings for vocals, stars, sand for hats.</span></figcaption></figure>
+      <figure><video data-src="media/ink.mp4" poster="media/ink.jpg" muted loop playsinline></video>
+        <figcaption>V6 Ink waves<span>A soft blob with no centre, thick when it's loud.</span></figcaption></figure>
+      <figure><video data-src="media/shapes.mp4" poster="media/shapes.jpg" muted loop playsinline></video>
+        <figcaption>Drawn in symbols<span>Any version can be drawn with characters instead of pixels.</span></figcaption></figure>
+      <figure><video data-src="media/weather.mp4" poster="media/weather.jpg" muted loop playsinline></video>
+        <figcaption>V4 + V7 fused<span>Pick several versions; they invert where they overlap.</span></figcaption></figure>
+      <figure><video data-src="media/default.mp4" poster="media/default.jpg" muted loop playsinline></video>
+        <figcaption>The default look<span>V1 + V4 in ASCII, 8 px, 1-bit. What you see on first launch.</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="features">
+      <div><h3>Seven looks, fusable</h3><p>Spots, Shapes, Adaptive, Weather, Bursts, Ink waves, Field. Use one or fuse several, and switch any element off.</p></div>
+      <div><h3>Mix it yourself</h3><p>A slider each for bass, low mids, vocals, snare and hats, plus Intensity from subtle to jarring.</p></div>
+      <div><h3>Pixels or characters</h3><p>Dithered 1–4 bit pixels, or ASCII, symbols, shapes and binary, picked by brightness.</p></div>
+      <div><h3>One app or everything</h3><p>On Windows, follow all system audio or just one app, so notifications don't join in.</p></div>
+      <div><h3>Presets you can share</h3><p>Save a look, then copy a short code. Whoever pastes it gets exactly the same picture.</p></div>
+      <div><h3>Randomize</h3><p>Press <kbd>Space</kbd> to shuffle everything until something clicks.</p></div>
+    </div>
+  </section>
+
+  <section id="install">
+    <h2>Install &amp; run</h2>
+    <div class="install">
+      <div class="card">
+        <h3>Windows</h3>
+        <p class="sub">Windows 10 or 11 · about 30 MB · no installer</p>
+        <ol>
+          <li>Download <code>AudioVisualizer-windows.exe</code>.</li>
+          <li>Double-click it. It's a single file, so there's nothing to install. Put it anywhere you like.</li>
+          <li>If Windows shows <em>"Windows protected your PC"</em>, click <b>More info</b> then <b>Run anyway</b>.
+            This appears because the app isn't code-signed.</li>
+          <li>Play some music. The visualizer follows whatever you can hear, with no setup.</li>
+          <li>Press <kbd>Tab</kbd> for settings, <kbd>F</kbd> for fullscreen. In <em>Audio</em>, pick a single app (like Spotify) to follow.</li>
+        </ol>
+        <a class="btn" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-windows.exe">Download for Windows <small>.exe</small></a>
+      </div>
+
+      <div class="card">
+        <h3>Mac</h3>
+        <p class="sub">macOS on Apple silicon (M1 and newer) · for Intel Macs, run it from source below</p>
+        <ol>
+          <li>Download <code>AudioVisualizer-mac.zip</code> and double-click it to unzip. Drag <b>AudioVisualizer</b> into <em>Applications</em>.</li>
+          <li>The first time, <b>right-click the app → Open → Open</b>. The app isn't notarized, so macOS asks once.
+            On macOS 15 or newer, if there's no <em>Open</em> button: open it once, then go to <b>System Settings → Privacy &amp; Security</b>
+            and click <b>Open Anyway</b>.</li>
+          <li>Click <b>Allow</b> when it asks for the microphone. That's how it hears the music.</li>
+          <li>Press <kbd>Tab</kbd> for settings, <kbd>F</kbd> for fullscreen.</li>
+        </ol>
+        <details>
+          <summary>Make it react to music playing on the Mac itself (not the room)</summary>
+          <p>macOS doesn't let apps listen to system audio directly, so by default the visualizer hears your microphone.
+            To feed it the Mac's own sound:</p>
+          <ol>
+            <li>Install the free <a href="https://existential.audio/blackhole/">BlackHole 2ch</a> audio driver.</li>
+            <li>Open <b>Audio MIDI Setup</b>, click <b>+</b> → <b>Create Multi-Output Device</b>, and tick your speakers and <b>BlackHole 2ch</b>.</li>
+            <li>In <b>System Settings → Sound</b>, set <em>Output</em> to the Multi-Output Device and <em>Input</em> to <b>BlackHole 2ch</b>.</li>
+            <li>Restart the visualizer. You'll hear the music as normal, and it sees it too.</li>
+          </ol>
+        </details>
+        <a class="btn" href="https://github.com/karunalk97-sketch/visualizer/releases/latest/download/AudioVisualizer-mac.zip">Download for Mac <small>.zip</small></a>
+      </div>
+    </div>
+
+    <details class="card" style="margin-top:14px">
+      <summary>Run from source instead (any Mac, Windows or Linux with Python 3.10+)</summary>
+      <p>Download the code from <a href="https://github.com/karunalk97-sketch/visualizer">GitHub</a> (<b>Code → Download ZIP</b>), unzip it, then
+        double-click <code>Run-Windows.bat</code> on Windows or <code>Run-Mac.command</code> on a Mac. The first run sets itself up (a minute or so).
+        Or from a terminal:</p>
+<pre>git clone https://github.com/karunalk97-sketch/visualizer.git
+cd visualizer
+python -m pip install -e .
+python -m visualizer.main</pre>
+      <p>Useful flags: <code>--fullscreen</code>, <code>--demo</code> (a built-in test tone), <code>--app spotify</code> (Windows: follow one app),
+        <code>--preset "Preset 2"</code> or <code>--preset AVP1.…</code> (start with a saved look or a share code).</p>
+    </details>
+  </section>
+
+  <section>
+    <h2>Keys</h2>
+    <div class="keys">
+      <div><kbd>Tab</kbd><span>Settings</span></div>
+      <div><kbd>Space</kbd><span>Randomize the look</span></div>
+      <div><kbd>F</kbd><span>Fullscreen</span></div>
+      <div><kbd>R</kbd><span>New layout for this song</span></div>
+      <div><kbd>C</kbd><span>Pixels ↔ characters</span></div>
+      <div><kbd>↑ ↓</kbd><span>Smaller / bigger cells</span></div>
+      <div><kbd>B</kbd><span>Bit depth (1–4)</span></div>
+      <div><kbd>N</kbd><span>Show / hide track text</span></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Made with Python, NumPy and pygame. Pure code, no images.</span>
+    <a href="https://github.com/karunalk97-sketch/visualizer">Source on GitHub</a>
+  </footer>
+</div>
+
+<script>
+  // Put the visitor's own OS first.
+  (function () {
+    var mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    var win = document.getElementById("dl-win"), macBtn = document.getElementById("dl-mac");
+    (mac ? macBtn : win).classList.add("primary");
+    if (mac) win.parentNode.insertBefore(macBtn, win);
+  })();
+
+  // Only load and play the example clips that are on screen.
+  (function () {
+    var vids = document.querySelectorAll("video[data-src]");
+    if (!("IntersectionObserver" in window)) {
+      vids.forEach(function (v) { v.src = v.dataset.src; v.play(); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        var v = e.target;
+        if (e.isIntersecting) {
+          if (!v.src) v.src = v.dataset.src;
+          var p = v.play(); if (p && p.catch) p.catch(function () {});
+        } else if (v.src) {
+          v.pause();
+        }
+      });
+    }, { rootMargin: "120px" });
+    vids.forEach(function (v) { io.observe(v); });
+  })();
+</script>
+</body>
+</html>

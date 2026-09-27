@@ -4,9 +4,12 @@ A black & white, 1-bit audio visualizer for whatever is playing on your computer
 Pure code, no images: layers the music builds, calm when the music is calm and
 punchy when it hits. The design (and why) is in [docs/DESIGN.md](docs/DESIGN.md).
 
+**Website, examples and downloads: https://visualizer-1bit.vercel.app** (the page
+itself lives in [site/](site/)).
+
 - **Every version we built, selectable -- and fusable.** The *Versions* tab lists
   them all: **V1 Spots**, **V2 Shapes**, **V3 Adaptive**, **V4 Weather**,
-  **V5 Bursts**, **V6 Ink waves** and **V7 Field** (the default). Pick one, or pick
+  **V5 Bursts**, **V6 Ink waves** and **V7 Field**. Pick one, or pick
   several and they are fused: drawn together, inverting where they overlap. Each
   version is broken down into its elements (terrain, ink, rings, stars, 3D
   depth...) so you can switch any of them off. **Randomize** shuffles across
@@ -39,7 +42,8 @@ punchy when it hits. The design (and why) is in [docs/DESIGN.md](docs/DESIGN.md)
   sound -- so the picture isn't reacting to notifications or a video in another
   window. The status-bar title follows the app you chose.
 - **Randomize.** One button that shuffles the whole look until you find one you like.
-- **Session only.** Nothing is saved; every launch starts from the defaults.
+- **Presets.** Save a look, and share it as a short code. Other settings last
+  for the session only; every launch starts from the Default preset.
 
 ![samples](docs/samples.png)
 
