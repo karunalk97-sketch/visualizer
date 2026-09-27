@@ -1,56 +1,72 @@
-"""Soft ribbon waves, born when a synth, pad, chord or held vocal note begins.
+"""Surf: waves of sea foam rolling over the picture like water over a beach.
 
-There is no constant wave field. Each ribbon is an event: it appears when
-sustained tonal energy starts (or the note/chord changes, or a long held note
-"breathes" again), drifts across the screen, and fades. Between notes there can
-be no waves at all, and in silence everything fades out.
+Each wave is an event, born when a synth, pad, chord or held vocal note begins
+(or the note changes, or a long held note "breathes"). It always spans a whole
+edge of the screen -- bottom, top, left or right, a different one each time --
+and rolls inward: a quick uprush, a pause, then a slower backwash. The front is
+never straight and never repeats: every wave draws its own irregular shoreline
+(a blend of slow undulations plus a couple of "fingers" of water running ahead),
+and that shoreline keeps shifting as the wave travels.
 
-The frequencies picked up shape each ribbon:
+* the leading edge carries stippled, bubbling foam;
+* behind it the water sheet inverts what it covers, thinning towards the shore
+  side, and the sand it leaves behind stays faintly inverted while it "dries";
+* the music sets the size and character: louder notes run further up the beach,
+  low sounds make wide coarse foam and bright sounds a fine sparkling line,
+  and rich harmonic sounds make a more ragged shoreline.
 
-* low, warm sounds  -> fat, slow, spindle-shaped swells (thick in the middle);
-* bright sounds     -> thin, tighter ribbons;
-* rich / harmonic   -> a wobble along the ribbon and, mid-range, a dumbbell
-                       shape (thicker towards the ends).
-
-Edges are gaussian-soft, never sharp. Ribbons are computed on a small grid and
-smoothly upscaled by the caller. `compose` inverts whatever is beneath a wave,
-so a ribbon over solid white cuts black, over gray it flips the gray, and over
-black it shows white.
+Between notes there can be no waves at all, and in silence everything fades out.
+`compose` inverts whatever is beneath the surf: white -> black, gray flips, and
+over black it shows white, so it reads as a depth map across the picture.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 # fractions of the 40 Hz - 16 kHz log axis: ~250-700 Hz, 700-2k, 2k-6k, 6k-16k
 _LAYER_EDGES = (0.29, 0.47, 0.65, 0.84, 1.0)
-MAX_RIBBONS = 3
+EDGES = ("bottom", "top", "left", "right")
+MAX_WAVES = 2
 _OCTAVE_BINS = 11  # one octave on the 96-bin, 40 Hz - 16 kHz log axis (~11.1 bins)
 
 
 @dataclass
-class Ribbon:
-    kind: str            # "spindle" (thick middle), "dumbbell" (thick ends), "flat"
-    x0: float            # start position, in screen-height units
-    y0: float
-    dx: float            # direction of travel (unit vector); the ribbon lies across it
-    dy: float
-    speed: float         # height-units per frame
-    length: float
-    width: float         # thickness at its thickest
-    bend: float
-    wobble: float
-    wob_len: float
-    phase: float
+class Wave:
+    edge: str
+    reach: float          # furthest inland it runs, as a fraction of the screen (0..1)
+    wobble: float         # how ragged the shoreline is
+    foam_width: float     # thickness of the foam line
     amp: float
     life: int
+    freqs: np.ndarray     # shoreline undulations: cycles across the edge
+    phases: np.ndarray
+    rates: np.ndarray     # how fast each undulation drifts
+    amps: np.ndarray
+    fingers: list         # (centre 0..1, width, height, drift) tongues of water running ahead
+    foam: np.ndarray      # (h, w) bubble texture, scrolled as the wave moves
+    hold: float = 0.15    # share of its life spent at the furthest point
     age: int = 0
+    foam_off: float = 0.0
 
 
 def _smoothstep(lo: float, hi: float, x: np.ndarray) -> np.ndarray:
     t = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
+
+
+def swash(t: float, hold: float) -> float:
+    """Where the water is at life fraction t: 0 at the shore, 1 at the furthest
+    point. A quick uprush, a pause, then a slower backwash."""
+    up_end = 0.26
+    down_start = up_end + hold
+    if t < up_end:
+        return 1.0 - (1.0 - t / up_end) ** 2.4
+    if t < down_start:
+        return 1.0
+    s = (t - down_start) / max(1e-6, 1.0 - down_start)
+    return max(0.0, 1.0 - s) ** 1.7
 
 
 class WaveField:
@@ -66,7 +82,7 @@ class WaveField:
     ) -> None:
         self.num_bins = num_bins
         self.strength = strength
-        self.softness = softness  # 0 = crisper ribbon edges, 1 = very feathered
+        self.softness = softness  # 0 = crisper waterline, 1 = very feathered
         self.rate = rate          # how often waves are born (2 = twice as often)
         self._rng = np.random.default_rng(seed)
         self._edges = [int(round(f * num_bins)) for f in _LAYER_EDGES]
@@ -75,7 +91,8 @@ class WaveField:
         self._peak_ref = 0.0
         self._seg_ref = np.zeros(self._n, dtype=np.float32)
         self._presence = 0.0
-        self._ribbons: list[Ribbon] = []
+        self._waves: list[Wave] = []
+        self._last_edge = ""
         # per-layer onset detection state
         self._armed = np.ones(self._n, dtype=bool)
         self._cool = np.zeros(self._n, dtype=np.int32)
@@ -87,31 +104,38 @@ class WaveField:
         self.resize(grid_w, grid_h)
 
     def _new_interval(self, n: int) -> np.ndarray:
-        """Frames a held note waits before it may 'breathe' out another ribbon."""
+        """Frames a held note waits before it may 'breathe' out another wave."""
         return (self._rng.integers(700, 1300, n) / max(0.25, self.rate)).astype(np.int32)
 
     # -- public state ------------------------------------------------------------
 
     @property
     def active(self) -> bool:
-        """False when no ribbon is on screen (silence, or nothing tonal playing)."""
-        return bool(self._ribbons) and self._presence > 0.01
+        """False when no wave is on screen and no wet sand is left."""
+        return (bool(self._waves) and self._presence > 0.01) or float(self._wet.max()) > 0.01
 
     @property
-    def ribbon_count(self) -> int:
-        return len(self._ribbons)
+    def wave_count(self) -> int:
+        return len(self._waves)
 
     def reshuffle(self) -> None:
-        """A new song: let the current ribbons finish; new ones get new directions."""
+        """A new song: let the current waves finish; the next ones start fresh."""
         self._armed[:] = True
         self._cool[:] = 0
 
     def resize(self, grid_w: int, grid_h: int) -> None:
         self.grid_w, self.grid_h = grid_w, grid_h
-        aspect = grid_w / max(1, grid_h)
-        self.aspect = aspect
-        self._x = np.linspace(0.0, aspect, grid_w, dtype=np.float32)[None, :]
-        self._y = np.linspace(0.0, 1.0, grid_h, dtype=np.float32)[:, None]
+        y = np.linspace(0.0, 1.0, grid_h, dtype=np.float32)[:, None]
+        x = np.linspace(0.0, 1.0, grid_w, dtype=np.float32)[None, :]
+        self._dist = {  # distance inland from each edge, 0 at the edge, 1 at the far side
+            "bottom": np.broadcast_to(1.0 - y, (grid_h, grid_w)),
+            "top": np.broadcast_to(y, (grid_h, grid_w)),
+            "left": np.broadcast_to(x, (grid_h, grid_w)),
+            "right": np.broadcast_to(1.0 - x, (grid_h, grid_w)),
+        }
+        self._along = {"bottom": x, "top": x, "left": y, "right": y}  # position along the edge, 0..1
+        self._wet = np.zeros((grid_h, grid_w), dtype=np.float32)
+        self._waves.clear()
 
     # -- analysis ----------------------------------------------------------------
 
@@ -166,65 +190,77 @@ class WaveField:
                 or self._hold[i] > self._interval[i]                      # a long held note breathes
             )
             self._anchor[i] += (self._where[i] - self._anchor[i]) * 0.02
-            if fire and self._cool[i] == 0 and self._gap == 0 and len(self._ribbons) < MAX_RIBBONS:
-                self._spawn(i, t, int(bins[i]), float(rich[i]))
+            if fire and self._cool[i] == 0 and self._gap == 0 and len(self._waves) < MAX_WAVES:
+                self._spawn(t, int(bins[i]), float(rich[i]))
                 self._armed[i] = False
                 self._cool[i] = int(240 / max(0.25, self.rate))
                 self._hold[i] = 0
                 self._interval[i] = int(self._new_interval(1)[0])
                 self._anchor[i] = self._where[i]
-                self._gap = int(self._rng.integers(420, 800) / max(0.25, self.rate))  # waves are occasional, not a stream
+                self._gap = int(self._rng.integers(300, 600) / max(0.25, self.rate))  # surf comes in sets, not a stream
 
-    def _spawn(self, layer: int, amp: float, bin_: int, richness: float) -> None:
+    def _spawn(self, amp: float, bin_: int, richness: float, edge: str | None = None) -> Wave:
         r = self._rng
         pitch = float(np.clip((bin_ / self.num_bins - 0.29) / 0.71, 0.0, 1.0))  # 0 = low, 1 = high
-        kind = "flat" if pitch > 0.7 else ("dumbbell" if (richness > 0.55 and pitch > 0.25) else "spindle")
-        width = (0.075 - 0.058 * pitch) * r.uniform(0.85, 1.2)
-        length = self.aspect * (1.05 - 0.5 * pitch) * r.uniform(0.85, 1.15)
-        theta = r.uniform(0, 2 * np.pi)
-        dx, dy = float(np.cos(theta)), float(np.sin(theta))
-        life = int(r.integers(300, 480))
-        speed = (0.9 + 0.5 * amp) * (1.3 - 0.6 * pitch) / life * r.uniform(0.9, 1.1)  # crosses ~1 screen
-        cx, cy = 0.5 * self.aspect + r.uniform(-0.25, 0.25), 0.5 + r.uniform(-0.2, 0.2)
-        travel = speed * life
-        self._ribbons.append(Ribbon(
-            kind=kind,
-            x0=cx - dx * travel / 2, y0=cy - dy * travel / 2, dx=dx, dy=dy, speed=speed,
-            length=length, width=width,
-            bend=float(r.uniform(-0.35, 0.35)),
-            wobble=float(width * richness * r.uniform(0.6, 1.4)),
-            wob_len=float(r.uniform(0.18, 0.5) * (1.0 - 0.4 * pitch)),
-            phase=float(r.uniform(0, 2 * np.pi)),
-            amp=float(np.clip(0.55 + 0.6 * amp, 0.0, 1.0)),
-            life=life,
-        ))
+        if edge is None:                                     # a different edge than last time
+            edge = str(r.choice([e for e in EDGES if e != self._last_edge]))
+        self._last_edge = edge
+        k = int(r.integers(4, 7))
+        h, w = self.grid_h, self.grid_w
+        foam = r.random((h, w)).astype(np.float32)
+        for _ in range(2 if pitch < 0.5 else 1):             # low sounds: coarser bubbles; bright: fine sparkle
+            foam = (foam + np.roll(foam, 1, 0) + np.roll(foam, -1, 0) + np.roll(foam, 1, 1) + np.roll(foam, -1, 1)) / 5.0
+        foam = (foam - foam.min()) / max(1e-6, float(foam.max() - foam.min()))
+        wave = Wave(
+            edge=edge,
+            reach=float(np.clip(0.28 + 0.6 * amp, 0.3, 0.9) * r.uniform(0.9, 1.1)),
+            wobble=float(0.05 + 0.11 * richness) * float(r.uniform(0.8, 1.2)),
+            foam_width=float(0.05 - 0.032 * pitch) * float(r.uniform(0.85, 1.2)),
+            amp=float(np.clip(0.6 + 0.5 * amp, 0.0, 1.0)),
+            life=int(r.integers(300, 460) * (0.85 + 0.3 * amp)),
+            freqs=np.sort(r.uniform(0.7, 5.5, k)).astype(np.float32),
+            phases=r.uniform(0, 2 * np.pi, k).astype(np.float32),
+            rates=r.uniform(-0.03, 0.03, k).astype(np.float32),
+            amps=(1.0 / np.arange(1, k + 1) ** 0.7 * r.uniform(0.6, 1.0, k)).astype(np.float32),
+            fingers=[(float(r.random()), float(r.uniform(0.04, 0.1)), float(r.uniform(0.05, 0.14)), float(r.uniform(-0.002, 0.002)))
+                     for _ in range(int(r.integers(0, 3)))],
+            foam=foam,
+            hold=float(r.uniform(0.08, 0.28)),
+        )
+        self._waves.append(wave)
+        return wave
 
     # -- drawing -----------------------------------------------------------------
 
-    def _draw(self, rb: Ribbon, k: float) -> np.ndarray:
-        cx = rb.x0 + rb.dx * rb.speed * rb.age
-        cy = rb.y0 + rb.dy * rb.speed * rb.age
-        rx, ry = self._x - cx, self._y - cy
-        along = -rx * rb.dy + ry * rb.dx            # position along the ribbon's long axis
-        across = rx * rb.dx + ry * rb.dy            # distance across it
-        across = across - rb.bend * along * along   # gentle arc
-        across = across + rb.wobble * np.sin(2 * np.pi * along / rb.wob_len + rb.phase + rb.age * 0.025)
-        s = np.clip(along / rb.length + 0.5, 0.0, 1.0)
-        c = np.cos(np.pi * (s - 0.5))               # 1 in the middle, 0 at the tips
-        if rb.kind == "spindle":
-            taper = np.maximum(c, 0.0) ** 0.8       # thick in the middle
-        elif rb.kind == "dumbbell":
-            taper = 0.35 + 0.65 * (1.0 - c) ** 1.2  # thick towards the ends
-        else:
-            taper = np.minimum(1.0, c * 3.0)        # even thin ribbon
-        d = np.abs(across) / (rb.width * taper + 1e-3)
-        band = np.exp(-(d * d) * k)                 # gaussian: soft edges, never sharp
-        tips = _smoothstep(0.0, 0.14, s) * _smoothstep(1.0, 0.86, s)
-        inside = ((along > -rb.length / 2) & (along < rb.length / 2)).astype(np.float32)
-        return band * tips * inside
+    def _shoreline(self, wv: Wave, reach_now: float) -> np.ndarray:
+        """Distance inland of the water's edge at each position along the screen edge."""
+        v = self._along[wv.edge]
+        line = np.zeros_like(v, dtype=np.float32)
+        for f, ph, rt, a in zip(wv.freqs, wv.phases, wv.rates, wv.amps):
+            line = line + a * np.sin(2 * np.pi * f * v + ph + rt * wv.age)
+        line = line / max(1e-6, float(wv.amps.sum()))                     # roughly -1..1
+        for c, width, height, drift in wv.fingers:
+            line = line + (height / max(wv.wobble, 1e-3)) * np.exp(-(((v - (c + drift * wv.age)) / width) ** 2))
+        # the ragged part grows with how far up the beach the water is, so the wave
+        # starts as a straight line hugging the whole edge and roughens as it runs in
+        return reach_now * wv.reach + reach_now * wv.wobble * line
+
+    def _draw(self, wv: Wave, reach_now: float) -> tuple[np.ndarray, np.ndarray]:
+        d = self._shoreline(wv, reach_now) - self._dist[wv.edge]   # >0 inside the water
+        soft = 0.012 + 0.05 * float(np.clip(self.softness, 0.0, 1.0))
+        dry = np.maximum(d, 0.0)
+        sheet = 0.5 * _smoothstep(-soft * 0.4, soft, d) * (0.4 + 0.6 * np.exp(-dry / 0.2))
+        fw = wv.foam_width
+        tex = np.roll(wv.foam, (int(wv.foam_off), int(wv.foam_off * 0.6)), axis=(0, 1))
+        bubbles = _smoothstep(0.42, 0.58, tex)                                    # some cells bright, some gaps
+        lace = _smoothstep(0.58, 0.72, tex)                                       # sparser, only the brightest specks
+        edge = _smoothstep(-fw * 0.7, 0.0, d) * np.exp(-dry / fw)                 # the bright leading line
+        trail = _smoothstep(0.0, fw * 0.6, d) * np.exp(-dry / (fw * 3.6))         # lacy foam left behind it
+        foam = np.clip(edge * (0.3 + 0.7 * bubbles) + 0.8 * trail * lace, 0.0, 1.0)
+        return sheet, foam
 
     def update(self, band_levels: np.ndarray) -> np.ndarray:
-        """Returns the wave layer, shape (grid_h, grid_w), values 0..1."""
+        """Returns the surf layer, shape (grid_h, grid_w), values 0..1."""
         amps, where, bins, rich = self._analyse(band_levels)
         self._detect_onsets(amps, where, bins, rich)
 
@@ -232,19 +268,24 @@ class WaveField:
         now = float(np.clip(float(band_levels.max()) / 0.06, 0.0, 1.0))
         self._presence += (now - self._presence) * (0.15 if now > self._presence else 0.06)
 
+        self._wet *= 0.985                                    # sand slowly dries
         out = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
-        if not self._ribbons:
-            return out
-        k = 3.4 * (1.0 - 0.75 * float(np.clip(self.softness, 0.0, 1.0)))  # softness -> gaussian falloff
-        for rb in self._ribbons:
-            rb.age += 1
-            fade = min(1.0, rb.age / 70.0) * min(1.0, (rb.life - rb.age) / 110.0)
-            alpha = max(0.0, fade) * self._presence * rb.amp * self.strength
+        for wv in self._waves:
+            wv.age += 1
+            wv.foam_off += 0.35
+            t = wv.age / wv.life
+            fade = min(1.0, wv.age / 40.0) * min(1.0, (wv.life - wv.age) / 60.0)
+            alpha = max(0.0, fade) * self._presence * wv.amp * self.strength
             if alpha < 0.005:
                 continue
-            layer = self._draw(rb, k) * alpha
-            out = out + layer - 2.0 * out * layer  # crossing ribbons invert each other
-        self._ribbons = [rb for rb in self._ribbons if rb.age < rb.life]
+            sheet, foam = self._draw(wv, swash(t, wv.hold))
+            np.maximum(self._wet, np.where(sheet > 0.05, 0.3, 0.0).astype(np.float32) * self._presence, out=self._wet)
+            s_a, f_a = sheet * alpha, foam * min(1.0, alpha * 1.9)                # foam stays crisp even when the water is faint
+            layer = s_a + f_a - s_a * f_a
+            out = out + layer - 2.0 * out * layer             # crossing waves invert each other
+        self._waves = [wv for wv in self._waves if wv.age < wv.life]
+        wet = self._wet * self.strength * 0.5                 # the drying sand is only faintly inverted
+        out = out + wet - 2.0 * out * wet
         return np.clip(out, 0.0, 1.0)
 
 

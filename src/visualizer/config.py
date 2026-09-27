@@ -1,26 +1,12 @@
+"""Settings for one session. Nothing is saved: every launch starts from these
+defaults, and the settings panel (or the Randomize button) changes them live."""
 from __future__ import annotations
 
-import json
-import os
-import sys
-from dataclasses import asdict, dataclass, field, fields
-from pathlib import Path
-
+from dataclasses import dataclass, field
 
 PIXEL_STEPS = [2, 3, 4, 6, 8, 12]        # screen pixels per bitmap cell, tightest first
 GLYPH_CELL_STEPS = list(range(6, 41, 2))  # character cell sizes
-
-
-def default_config_path() -> Path:
-    """Per-user settings location, so the packaged app can save settings even
-    though its own folder is read-only or temporary."""
-    if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", Path.home()))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return base / "AudioVisualizer" / "config.json"
+GLYPH_SETS = [("shapes", "Shapes"), ("symbols", "Symbols"), ("ascii", "ASCII"), ("binary", "Binary 0/1")]
 
 
 @dataclass
@@ -41,38 +27,21 @@ class Config:
     persistence: float = 0.88        # per-frame decay of the cluster energy (trailing/glow)
     decay: float = 0.85              # per-frame falloff of each frequency band's smoothed level
     gain: float = 1.0                # overall sensitivity multiplier
+
     show_shapes: bool = True         # the spiky/blobby shapes (1 toggles)
-    waves: bool = True               # soft ribbon waves born from synths/harmonies (2 toggles)
-    wave_strength: float = 0.6       # how strongly waves invert what is under them (0..1)
-    wave_softness: float = 0.6       # 0 = crisper ribbon edges, 1 = very feathered
+    waves: bool = True               # sea-foam surf rolling in from an edge (2 toggles)
+    wave_strength: float = 0.6       # how strongly the surf inverts what is under it (0..1)
+    wave_softness: float = 0.6       # 0 = crisper waterline, 1 = very feathered
     wave_rate: float = 1.0           # how often waves appear (2 = twice as often)
+    depth: float = 0.35              # relief lighting that makes the picture read as 3D (0 = flat)
     reshuffle_on_new_song: bool = True
 
     render_mode: str = "pixels"      # "pixels" (dithered) or "chars" (glyphs; 3 toggles)
     glyph_cell: int = 12             # character mode: cell size in screen pixels
     glyph_mapping: str = "random"    # "random" glyph per cell, or "brightness" (denser glyph = brighter)
-    glyph_font: str = ""             # font for your characters ("" = default symbol-capable font)
-    glyph_chars: str = ""            # your own characters, any script or symbol font
-    glyph_shapes: list = field(default_factory=lambda: ["circle", "square", "triangle", "diamond", "plus"])
+    glyph_sets: list = field(default_factory=lambda: ["shapes"])   # any of: shapes, symbols, ascii, binary
 
     show_now_playing: bool = True
     text_corner: str = "bottom_left"  # now-playing text corner; customization hint goes opposite
 
     fps: int = 60
-
-    @classmethod
-    def load(cls, path: str | Path) -> "Config":
-        p = Path(path)
-        if not p.exists():
-            return cls()
-        try:
-            data = json.loads(p.read_text())
-        except (OSError, ValueError):
-            return cls()
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
-
-    def save(self, path: str | Path) -> None:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(asdict(self), indent=2))

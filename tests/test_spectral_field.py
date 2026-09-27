@@ -1,6 +1,10 @@
 import numpy as np
 
-from visualizer.spectral_field import SpectralField, resize_nearest
+from visualizer.analyzer import SpectrumAnalyzer
+from visualizer.spectral_field import BLOB, HYBRID, PETAL, RING, STAR, STRING, SpectralField, resize_nearest
+
+SR = 48000
+BINS = 96
 
 
 def test_output_shape_and_range():
@@ -21,10 +25,12 @@ def test_same_seed_same_layout_different_seed_different_layout():
 
 def test_layout_is_not_frequency_ordered():
     """Neighbouring frequencies must NOT sit next to each other (no spiral/sweep)."""
-    field = SpectralField(num_bins=64, cluster_w=100, cluster_h=60, spots_per_bin=1, seed=3)
-    xy = field.positions()[np.argsort(field._owner)]  # spot position per bin, in frequency order
-    step = np.linalg.norm(np.diff(xy, axis=0), axis=1).mean()
-    rand_pairs = np.linalg.norm(xy[np.random.default_rng(0).permutation(64)] - xy, axis=1).mean()
+    field = SpectralField(num_bins=64, cluster_w=100, cluster_h=60, seed=3)
+    xy = field.positions()
+    first = [int(np.where(field._owner == b)[0][0]) for b in range(64)]   # one spot per bin, in frequency order
+    pts = xy[first]
+    step = np.linalg.norm(np.diff(pts, axis=0), axis=1).mean()
+    rand_pairs = np.linalg.norm(pts[np.random.default_rng(0).permutation(64)] - pts, axis=1).mean()
     assert step > 0.6 * rand_pairs  # adjacent bins are about as far apart as random pairs
 
 
@@ -90,12 +96,47 @@ def test_resize_nearest_shape_and_content():
     assert big.shape == (4, 4)
     assert set(np.unique(big)) <= {0.0, 1.0}
 
-def test_shapes_vary_between_spots():
-    field = SpectralField(num_bins=96, cluster_w=100, cluster_h=60, seed=9)
-    assert len(set(field._kind.tolist())) == 4              # blobs, spikes, strings, hybrids all present
-    assert field._elong.max() > 2.5 and field._elong.min() < 1.4   # round and stringy
-    assert field._spikes.max() >= 5 and field._spikes.min() == 0   # spiky and smooth
+
+# -- shapes ---------------------------------------------------------------------
+
+def test_all_six_shape_kinds_appear_and_vary():
+    field = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=9)
+    assert set(field._kind.tolist()) == {BLOB, STAR, STRING, HYBRID, PETAL, RING}
+    assert field._elong.max() > 2.0 and field._elong.min() < 1.4
+    assert field._spikes.max() >= 5 and field._spikes.min() == 0
     assert len(set(np.round(field._angle, 2).tolist())) > 50       # pointing every which way
+
+
+def test_long_thin_slashes_are_rare():
+    """Long strings and stretched hybrids read as slashes: they must not dominate."""
+    fractions = []
+    for seed in range(8):
+        f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=seed)
+        fractions.append(float(np.mean(np.isin(f._kind, [STRING, HYBRID]))))
+        assert np.mean(f._elong > 2.0) < 0.15
+    assert np.mean(fractions) < 0.22
+    for kind in (BLOB, STAR, PETAL, RING):          # and the round/flowery kinds carry the picture
+        f = SpectralField(num_bins=BINS, cluster_w=100, cluster_h=60, seed=1)
+        assert np.mean(f._kind == kind) > 0.1
+
+
+def test_rings_are_hollow_and_petals_are_rounded():
+    def render(kind):
+        f = SpectralField(num_bins=8, cluster_w=60, cluster_h=60, persistence=0.0, spots_per_bin=1, seed=1)
+        f._kind[:] = kind
+        f._elong[:] = 1.0
+        f._angle[:] = 0.0
+        f._spin[:] = 0.0
+        f._spikes[:] = 6 if kind == PETAL else 0
+        f._depth[:] = 0.7 if kind == PETAL else 0.0
+        f._expo[:] = 1.0
+        layer = np.zeros((60, 60), dtype=np.float32)
+        f._splat(layer, 0, 30.0, 30.0, 12.0, 1.0)
+        return layer
+    ring = render(RING)
+    assert ring[30, 30] < 0.2 and ring.max() > 0.8          # dark middle, bright band
+    petal = render(PETAL)
+    assert petal[30, 30] > 0.8 and petal.sum() > 0
 
 
 def test_reshuffle_draws_new_shapes():
@@ -107,8 +148,9 @@ def test_reshuffle_draws_new_shapes():
 
 def test_overlaps_invert_instead_of_just_adding():
     loud = np.full(48, 1.0, dtype=np.float32)
-    additive = SpectralField(num_bins=48, cluster_w=60, cluster_h=36, persistence=0.0, invert=0.0, seed=6)
-    negative = SpectralField(num_bins=48, cluster_w=60, cluster_h=36, persistence=0.0, invert=1.0, seed=6)
+    kw = dict(num_bins=48, cluster_w=60, cluster_h=36, persistence=0.0, seed=6, max_bins=1.0, area_budget=10.0, max_active=200)
+    additive = SpectralField(invert=0.0, **kw)
+    negative = SpectralField(invert=1.0, **kw)
     a, n = additive.update(loud).copy(), negative.update(loud).copy()
     assert n.sum() < a.sum()          # crossings cancel out
     assert ((n < a - 0.3).sum()) > 20  # and there are real inverted pixels, not rounding noise
@@ -121,3 +163,99 @@ def test_held_note_does_not_strobe():
     held[5] = 0.9
     sums = [field.update(held).sum() for _ in range(30)]
     assert max(sums[10:]) < 1.25 * min(sums[10:])   # steady, not flashing frame to frame
+
+
+# -- frequency mapping ----------------------------------------------------------
+
+def _kick(seconds=6.0):
+    t = np.arange(int(seconds * SR)) / SR
+    out = np.zeros_like(t)
+    for s in np.arange(0, seconds, 0.5):
+        i, n = int(s * SR), int(0.25 * SR)
+        tt = np.arange(n) / SR
+        out[i:i + n] += np.sin(2 * np.pi * (45 + 80 * np.exp(-tt * 25)) * tt) * np.exp(-tt * 9) * 0.9
+        out[i:i + int(0.004 * SR)] += np.random.default_rng(1).standard_normal(int(0.004 * SR)) * 0.5   # the click
+    return out.astype(np.float32)
+
+
+def _hat(seconds=6.0):
+    t = np.arange(int(seconds * SR)) / SR
+    out = np.zeros_like(t)
+    rng = np.random.default_rng(2)
+    for s in np.arange(0.25, seconds, 0.5):
+        i, n = int(s * SR), int(0.06 * SR)
+        tt = np.arange(n) / SR
+        out[i:i + n] += np.diff(rng.standard_normal(n + 1)) * np.exp(-tt * 80) * 0.5
+    return out.astype(np.float32)
+
+
+def _lit(audio):
+    an = SpectrumAnalyzer(SR, BINS)
+    f = SpectralField(BINS, 142, 80, seed=3)
+    means = []
+    for k, i in enumerate(range(0, len(audio) - 1024, 1024)):
+        b = f.update(an.process(audio[i:i + 1024]))
+        if k > 60:
+            means.append(float(b.mean()))
+    return np.array(means)
+
+
+def test_a_hard_bass_hit_does_not_light_the_whole_screen():
+    kick = _lit(_kick())
+    assert kick.max() < 0.25          # the worst frame of a hard kick + click stays a fraction of the screen
+    assert kick.mean() > 0.005        # but it is definitely shown
+
+
+def test_a_hi_hat_lights_a_fair_share_compared_with_a_kick():
+    kick, hat = _lit(_kick()), _lit(_hat())
+    assert hat.mean() > 0.01                       # a hi-hat is visible...
+    assert hat.mean() > 0.4 * kick.mean()          # ...and not dwarfed by the kick
+
+
+def test_loud_broadband_noise_cannot_fill_the_canvas():
+    f = SpectralField(BINS, 142, 80, seed=3)
+    for _ in range(80):
+        b = f.update(np.full(BINS, 0.9, dtype=np.float32))
+    assert (b > 0.25).mean() < 0.5
+
+
+def test_each_frequency_is_judged_against_its_own_peak():
+    """A treble band that is quiet in absolute terms still lights when it is loud for *that* band."""
+    f = SpectralField(BINS, 100, 60, seed=1)
+    lv = np.zeros(BINS, dtype=np.float32)
+    lv[:10] = 0.6                        # loud bass, steady
+    for _ in range(100):
+        lv[80] = 0.08                    # treble peak that has always been quiet
+        shaped = f._shape(lv)
+    assert shaped[80] > 0.5
+    assert shaped[3] < 0.2 or shaped[3] > 0                           # bass is judged the same way (no crash, sane range)
+    assert shaped.min() >= 0.0 and shaped.max() <= 1.0
+
+
+def test_bass_is_grouped_and_treble_gets_more_smaller_spots():
+    f = SpectralField(BINS, 100, 60, seed=1)
+    lv = np.zeros(BINS, dtype=np.float32)
+    lv[:20] = np.linspace(0.3, 0.9, 20)
+    shaped = f._shape(lv)
+    groups = shaped[:20].reshape(5, 4)
+    assert np.allclose(groups, groups[:, :1])                          # bass bins share a level within each group of 4
+    frac = f._frac
+    per_bin = np.bincount(f._owner, minlength=BINS)
+    assert per_bin[frac < 0.22].max() == 1 and per_bin[frac > 0.5].min() > per_bin[frac < 0.22].max()
+    low = f._size_scale[f._frac[f._owner] < 0.22].mean()
+    high = f._size_scale[f._frac[f._owner] > 0.7].mean()
+    assert low > 1.5 * high                                            # bass draws big, treble small
+
+
+def test_area_budget_caps_what_one_frame_can_claim():
+    tight = SpectralField(BINS, 100, 60, seed=2, persistence=0.0, area_budget=0.03, max_bins=1.0)
+    loose = SpectralField(BINS, 100, 60, seed=2, persistence=0.0, area_budget=0.6, max_bins=1.0)
+    lv = np.full(BINS, 0.8, dtype=np.float32)
+    assert tight.update(lv).mean() < 0.6 * loose.update(lv).mean()
+
+
+def test_silence_is_black():
+    f = SpectralField(BINS, 100, 60, seed=2)
+    for _ in range(40):
+        out = f.update(np.zeros(BINS, dtype=np.float32))
+    assert out.max() == 0.0
