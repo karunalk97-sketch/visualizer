@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+
+
+PIXEL_STEPS = [2, 3, 4, 6, 8, 12]        # screen pixels per bitmap cell, tightest first
+GLYPH_CELL_STEPS = list(range(6, 41, 2))  # character cell sizes
 
 
 def default_config_path() -> Path:
@@ -34,13 +38,22 @@ class Config:
     spots_per_bin: int = 3           # random spots each frequency owns
     drift: float = 0.03              # how far spots wander from home (fraction of the screen)
     overlap_invert: float = 0.85     # where shapes overlap they invert (0 = just add, 1 = full negative)
-    cluster_scale: int = 3           # cluster grid is this many dither-cells per side, coarser
     persistence: float = 0.88        # per-frame decay of the cluster energy (trailing/glow)
     decay: float = 0.85              # per-frame falloff of each frequency band's smoothed level
     gain: float = 1.0                # overall sensitivity multiplier
-    waves: bool = True               # cascading waves driven by synths/harmonies (W toggles)
-    wave_strength: float = 0.6      # how strongly waves invert what is under them (0..1)
+    show_shapes: bool = True         # the spiky/blobby shapes (1 toggles)
+    waves: bool = True               # soft ribbon waves born from synths/harmonies (2 toggles)
+    wave_strength: float = 0.6       # how strongly waves invert what is under them (0..1)
+    wave_softness: float = 0.6       # 0 = crisper ribbon edges, 1 = very feathered
+    wave_rate: float = 1.0           # how often waves appear (2 = twice as often)
     reshuffle_on_new_song: bool = True
+
+    render_mode: str = "pixels"      # "pixels" (dithered) or "chars" (glyphs; 3 toggles)
+    glyph_cell: int = 12             # character mode: cell size in screen pixels
+    glyph_mapping: str = "random"    # "random" glyph per cell, or "brightness" (denser glyph = brighter)
+    glyph_font: str = ""             # font for your characters ("" = default symbol-capable font)
+    glyph_chars: str = ""            # your own characters, any script or symbol font
+    glyph_shapes: list = field(default_factory=lambda: ["circle", "square", "triangle", "diamond", "plus"])
 
     show_now_playing: bool = True
     text_corner: str = "bottom_left"  # now-playing text corner; customization hint goes opposite

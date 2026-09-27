@@ -27,6 +27,8 @@ class BitmapRenderer:
         pygame.font.init()
         self._fonts: dict[int, pygame.font.Font] = {}
         self._surf: pygame.Surface | None = None
+        self._gray: pygame.Surface | None = None
+        self.overlay = None  # optional callable(surface), drawn just before the frame is shown
         self.resize(grid_width, grid_height, screen_width, screen_height)
 
     def resize(self, grid_width: int, grid_height: int, screen_width: int, screen_height: int) -> None:
@@ -57,11 +59,29 @@ class BitmapRenderer:
             img = self._font.render(right_text, True, TEXT_DIM)
             self.screen.blit(img, (self.screen_width - img.get_width() - pad, bar.centery - img.get_height() // 2))
 
+    def _finish(self, left_text: str, right_text: str) -> None:
+        self._draw_bar(left_text, right_text)
+        if self.overlay is not None:  # e.g. the settings panel, drawn over the picture
+            self.overlay(self.screen)
+        pygame.display.flip()
+
     def _present(self, surf: pygame.Surface, left_text: str, right_text: str) -> None:
         scaled = pygame.transform.scale(surf, (self.screen_width, self.field_h))
         self.screen.blit(scaled, (0, 0))
-        self._draw_bar(left_text, right_text)
-        pygame.display.flip()
+        self._finish(left_text, right_text)
+
+    def render_gray(self, image: np.ndarray, left_text: str = "", right_text: str = "") -> None:
+        """Draw an already full-resolution (H, W) uint8 grayscale image at the top
+        left, without scaling (character mode); anything it doesn't cover is black."""
+        h, w = image.shape
+        h, w = min(h, self.field_h), min(w, self.screen_width)
+        if self._gray is None or self._gray.get_size() != (image.shape[1], image.shape[0]):
+            self._gray = pygame.Surface((image.shape[1], image.shape[0]), depth=8)
+            self._gray.set_palette([(v, v, v) for v in range(256)])
+        pygame.surfarray.blit_array(self._gray, image.T)
+        self.screen.fill(BLACK, (0, 0, self.screen_width, self.field_h))
+        self.screen.blit(self._gray, (0, 0), pygame.Rect(0, 0, w, h))
+        self._finish(left_text, right_text)
 
     def _indexed_surface(self, intensity: np.ndarray, colors) -> pygame.Surface:
         """8-bit palettised surface: a third of the memory of RGB, much faster to scale."""

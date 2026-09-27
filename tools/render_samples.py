@@ -1,5 +1,6 @@
 """Renders headless screenshots of the visualizer for different kinds of audio,
-running the same pipeline as the app (spots + waves + dithering + status bar).
+running the same pipeline as the app (shapes + ribbon waves + pixels or
+characters + status bar + optional settings panel).
 
     python tools/render_samples.py out_dir            # synthetic music styles
     python tools/render_samples.py out_dir --live 20  # + real system audio (Windows)
@@ -9,6 +10,7 @@ Handy for checking layout/sensitivity changes without opening a window.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 from pathlib import Path
 
@@ -18,14 +20,18 @@ import numpy as np  # noqa: E402
 import pygame  # noqa: E402
 
 from visualizer.analyzer import SpectrumAnalyzer  # noqa: E402
+from visualizer.config import Config  # noqa: E402
+from visualizer.glyphs import GlyphField  # noqa: E402
+from visualizer.main import DEFAULT_GLYPH_FONT, grid_for, shape_grid, wave_grid  # noqa: E402
 from visualizer.palette import grayscale_palette  # noqa: E402
-from visualizer.renderer import BitmapRenderer, bar_height  # noqa: E402
+from visualizer.renderer import BitmapRenderer  # noqa: E402
+from visualizer.settings_ui import SettingsPanel  # noqa: E402
 from visualizer.spectral_field import SpectralField, resize_bilinear  # noqa: E402
 from visualizer.waves import WaveField, compose  # noqa: E402
 
 SR = 48000
 CHUNK = 1024
-W, H, PIXEL = 1280, 720, 3
+W, H = 1280, 720
 
 
 def _t(seconds: float) -> np.ndarray:
@@ -121,28 +127,50 @@ STYLES = {
 }
 
 
-def render_frames(chunks, seed: int, out_path: Path, warmup: int = 240, invert: float = 0.85,
-                  waves: bool = True, bits: int = 1, pixel: int = PIXEL,
-                  label: str = "Midnight Drive - The Sample Band", crop: tuple | None = None) -> np.ndarray:
+def render_frames(chunks, seed: int, out_path: Path, warmup: int = 240, cfg: Config | None = None,
+                  label: str = "Midnight Drive - The Sample Band", crop: tuple | None = None,
+                  panel: bool = False, want_ribbons: int = 0, **cfg_overrides) -> np.ndarray:
+    """Runs the audio through the app's pipeline and saves the frame after `warmup`
+    chunks (continuing until `want_ribbons` ribbons are on screen, if asked)."""
+    cfg = dataclasses.replace(cfg or Config(), **cfg_overrides)
     pygame.display.set_mode((W, H))
-    bar = bar_height(H)
-    gw, gh = W // pixel, (H - bar) // pixel
-    renderer = BitmapRenderer(gw, gh, W, H)
+    grid_w, grid_h = grid_for(cfg, W, H)
+    renderer = BitmapRenderer(grid_w, grid_h, W, H)
     analyzer = SpectrumAnalyzer(sample_rate=SR, num_bands=96)
-    cw, ch = max(8, gw // 3), max(8, gh // 3)
-    field = SpectralField(96, cw, ch, seed=seed, invert=invert)
-    wave_field = WaveField(96, max(16, gw // 2), max(9, gh // 2), seed=seed)
-    levels = base = wave = None
-    for n, chunk in enumerate(chunks):
+    field = SpectralField(96, *shape_grid(W, H), seed=seed, invert=cfg.overlap_invert)
+    waves = WaveField(96, *wave_grid(W, H), seed=seed, strength=cfg.wave_strength,
+                      softness=cfg.wave_softness, rate=cfg.wave_rate)
+    glyphs = GlyphField(seed=seed)
+    ui = SettingsPanel(cfg, lambda name: None, lambda: None)
+    ui.visible = panel
+    renderer.overlay = lambda surface: ui.draw(surface, W, renderer.field_h)
+
+    levels = intensity = None
+    it = iter(chunks)
+    n = 0
+    while True:
+        chunk = next(it, None)
+        if chunk is None:
+            break
         levels = analyzer.process(chunk)
         base = field.update(levels)
-        wave = wave_field.update(levels)
-        if n >= warmup:
+        wv = waves.update(levels) if cfg.waves else None
+        n += 1
+        done = n >= warmup and (waves.ribbon_count >= want_ribbons or n > warmup + 900)
+        if done:
+            intensity = (resize_bilinear(base, grid_h, grid_w) if cfg.show_shapes
+                         else np.zeros((grid_h, grid_w), np.float32))
+            if wv is not None and waves.active:
+                intensity = compose(intensity, resize_bilinear(wv, grid_h, grid_w))
             break
-    intensity = resize_bilinear(base, gh, gw)
-    if waves:
-        intensity = compose(intensity, resize_bilinear(wave, gh, gw))
-    renderer.render_field(intensity, grayscale_palette(bits), label, f"{bits}-bit  {chr(0xB7)}  {pixel}px")
+    if intensity is None:
+        intensity = resize_bilinear(base, grid_h, grid_w) if cfg.show_shapes else np.zeros((grid_h, grid_w), np.float32)
+    hint = f"Tab: settings   {chr(0xB7)}   {cfg.bit_depth}-bit  {chr(0xB7)}  "
+    if cfg.render_mode == "chars":
+        glyphs.configure(cfg.glyph_shapes, cfg.glyph_chars, cfg.glyph_font or DEFAULT_GLYPH_FONT, cfg.glyph_cell, cfg.bit_depth)
+        renderer.render_gray(glyphs.render(intensity, cfg.glyph_mapping), label, hint + f"{cfg.glyph_cell}px chars")
+    else:
+        renderer.render_field(intensity, grayscale_palette(cfg.bit_depth), label, hint + f"{cfg.pixel_size}px")
     surf = pygame.display.get_surface()
     if crop:
         surf = surf.subsurface(pygame.Rect(crop))
@@ -176,18 +204,28 @@ def main() -> None:
     pygame.init()
 
     for name, fn in STYLES.items():
-        lv = render_frames(chunked(fn(6.0)), seed=11, out_path=out / f"{name}.png")
+        lv = render_frames(chunked(fn(12.0)), seed=11, out_path=out / f"{name}.png", want_ribbons=1 if name in ("synth_pad", "vocal") else 0)
         print(f"{name}: mean level {lv.mean():.2f}, peak {lv.max():.2f}")
 
-    # the same pad with waves switched off, for comparison
-    render_frames(chunked(synth_pad(6.0)), seed=11, out_path=out / "synth_pad_no_waves.png", waves=False)
-    # the same music at different pixel tightness and bit depth
-    for px in (2, 3, 6):
-        render_frames(chunked(pad_and_drums(6.0)), seed=11, out_path=out / f"grid_{px}px.png", pixel=px)
-    render_frames(chunked(pad_and_drums(6.0)), seed=11, out_path=out / "bits_2.png", bits=2)
-    render_frames(chunked(pad_and_drums(6.0)), seed=11, out_path=out / "bits_3.png", bits=3)
+    pad = lambda: chunked(synth_pad(12.0))          # noqa: E731
+    mix = lambda: chunked(pad_and_drums(12.0))      # noqa: E731
+    # layers on / off
+    render_frames(pad(), 11, out / "layers_both.png", want_ribbons=1)
+    render_frames(pad(), 11, out / "layers_waves_only.png", want_ribbons=1, show_shapes=False)
+    render_frames(pad(), 11, out / "layers_shapes_only.png", want_ribbons=1, waves=False)
+    # character mode
+    chars = dict(render_mode="chars", want_ribbons=1)
+    render_frames(mix(), 11, out / "chars_shapes.png", **chars)
+    render_frames(mix(), 11, out / "chars_wingdings.png", glyph_shapes=[], glyph_chars="lmnopqrsuvxy", glyph_font="wingdings", **chars)
+    render_frames(mix(), 11, out / "chars_text.png", glyph_shapes=[], glyph_chars="01", glyph_cell=10, **chars)
+    render_frames(mix(), 11, out / "chars_bright.png", glyph_shapes=[], glyph_chars="·:+*#@", glyph_mapping="brightness",
+                  glyph_cell=10, glyph_font="consolas", **chars)
+    render_frames(mix(), 11, out / "chars_blocks.png", glyph_shapes=[], glyph_chars="░▒▓█", glyph_mapping="brightness",
+                  glyph_cell=10, bit_depth=3, **chars)
+    # the settings panel
+    render_frames(mix(), 11, out / "panel_pixels.png", panel=True)
+    render_frames(mix(), 11, out / "panel_chars.png", panel=True, glyph_chars="lmnop", glyph_font="wingdings", **chars)
 
-    # silence after music: the waves must fade out to black
     quiet = np.concatenate([synth_pad(3.0), np.zeros(SR * 4, dtype=np.float32)])
     render_frames(chunked(quiet), seed=11, out_path=out / "after_silence.png", warmup=10 ** 6)
 
